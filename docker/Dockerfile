@@ -18,17 +18,17 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy code and requirements
-COPY ./src /app/src
-COPY ./scripts /app/scripts
-COPY requirements /app/requirements
+# Copy application code
+COPY ../src /app/src
+COPY ../scripts /app/scripts
+COPY ../requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# Clone and build llama.cpp for GGUF quantization
+# Clone and build llama.cpp for GGUF conversion
 RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp && \
     cd /app/llama.cpp && make quantize
 
-# Set entrypoint
+# Set default shell
 ENTRYPOINT ["/bin/bash"]
