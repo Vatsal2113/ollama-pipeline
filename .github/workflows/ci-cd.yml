@@ -1,40 +1,47 @@
-name: Ollama LoRA - Parallel Fine-Tuning
+name: Lora Finetune Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+  workflow_dispatch:  # allow manual runs too
 
 jobs:
   train-multiple:
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
-        model: [
-          "tiiuae/falcon-7b",
-          "openlm-research/open_llama_3b"
-        ]
-      fail-fast: false
+        model: [tiiuae/falcon-7b, openlm-research/open_llama_3b]
+
+    env:
+      AWS_REGION: us-east-2
+      JSONL_PATH: /opt/ml/input/data/train.jsonl
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Build Docker image
+        run: |
+          docker build -t lora-finetune -f docker/Dockerfile .
 
-    - name: Fine-tune and convert
-      run: bash scripts/run_pipeline.sh "${{ matrix.model }}" "data/train.jsonl"
+      - name: Run training pipeline
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/src:/opt/ml/code \
+            -v ${{ github.workspace }}/scripts:/opt/ml/input/scripts \
+            -v ${{ github.workspace }}/data:/opt/ml/input/data \
+            -v ${{ github.workspace }}/artifacts:/opt/ml/output \
+            lora-finetune \
+            bash /opt/ml/input/scripts/pipeline.sh "${{ matrix.model }}" "${{ env.JSONL_PATH }}"
