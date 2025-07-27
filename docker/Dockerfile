@@ -1,23 +1,22 @@
 FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 
-# Prevent tzdata timezone prompt during build
+# Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install required system packages
+# Install system packages (CMake + build tools)
 RUN apt-get update && apt-get install -y \
-    git wget make build-essential cmake clang tzdata \
+    git wget build-essential cmake clang tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and install Python packages
+# Install Python dependencies
 RUN pip install --upgrade pip && \
     pip install transformers peft datasets accelerate boto3 sagemaker
 
-# Clone llama.cpp and build quantization tools
+# Clone and build llama.cpp using CMake
 RUN git clone https://github.com/ggerganov/llama.cpp.git && \
-    cd llama.cpp && make
+    cd llama.cpp && mkdir build && cd build && \
+    cmake .. && cmake --build . --config Release
 
-# Copy local source code into container
+# Copy your code
 COPY src /opt/ml/code/
-
-# Set working directory for script execution
 WORKDIR /opt/ml/code/
