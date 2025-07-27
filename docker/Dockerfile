@@ -3,7 +3,7 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (include g++)
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     cmake \
     build-essential \
+    g++ \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -26,9 +27,9 @@ COPY ../requirements.txt /app/requirements.txt
 # Install Python dependencies
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# Clone and build llama.cpp for GGUF conversion
+# Clone llama.cpp and build GGUF tool
 RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp && \
-    cd /app/llama.cpp && make quantize
+    cd /app/llama.cpp && make
 
-# Set default shell
+# Entry shell
 ENTRYPOINT ["/bin/bash"]
