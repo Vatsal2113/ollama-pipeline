@@ -24,7 +24,7 @@ COPY ./scripts /app/scripts
 COPY requirements /app/requirements
 
 # Install Python dependencies
-RUN pip install --upgrade pip && pip install -r requirements
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Clone and build llama.cpp for GGUF quantization
 RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp && \
