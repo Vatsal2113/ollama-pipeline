@@ -1,25 +1,25 @@
-# Use compatible PyTorch version (2.1.2) with CUDA 11.8
+# Use compatible PyTorch image with CUDA 11.8 and PyTorch >= 2.1
 FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime
 
-# Prevent tzdata prompt during install
+# Avoid interactive prompts from tzdata
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install required system packages
+# Install system-level build tools and dependencies
 RUN apt-get update && apt-get install -y \
     git wget build-essential cmake clang tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and install Python dependencies
+# Install Python packages, including tiktoken for OpenLLaMA tokenizers
 RUN pip install --upgrade pip && \
-    pip install transformers peft datasets accelerate boto3 sagemaker
+    pip install transformers peft datasets accelerate boto3 sagemaker tiktoken
 
 # Clone and build llama.cpp using CMake (for GGUF conversion)
 RUN git clone https://github.com/ggerganov/llama.cpp.git && \
     cd llama.cpp && mkdir build && cd build && \
     cmake .. && cmake --build . --config Release
 
-# Copy your local source code into the container
+# Copy source code into container
 COPY src /opt/ml/code/
 
-# Set working directory where scripts will be run
+# Set working directory for script execution
 WORKDIR /opt/ml/code/
