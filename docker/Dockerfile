@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python packages, including tiktoken for OpenLLaMA tokenizers
 RUN pip install --upgrade pip && \
-    pip install transformers peft datasets accelerate boto3 sagemaker tiktoken
+    pip install transformers peft datasets accelerate boto3 sagemaker tiktoken blobfile
 
 # Clone and build llama.cpp using CMake (for GGUF conversion)
 RUN git clone https://github.com/ggerganov/llama.cpp.git && \
