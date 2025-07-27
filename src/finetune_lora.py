@@ -5,19 +5,33 @@ from peft import LoraConfig, get_peft_model
 from datasets import load_dataset
 
 model_id = sys.argv[1]
-jsonl_path = sys.argv[2]  # Can be local or s3:// path
+jsonl_path = sys.argv[2]
 
-print(f"Model: {model_id}")
-print(f"Dataset: {jsonl_path}")
+print(f"[INFO] Model: {model_id}")
+print(f"[INFO] Dataset: {jsonl_path}")
 
-# Load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(model_id)
+# Load tokenizer safely
+try:
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+except Exception as e:
+    print(f"[ERROR] Failed to load tokenizer: {e}")
+    sys.exit(1)
 
-# Load JSONL dataset
-dataset = load_dataset("json", data_files=jsonl_path, split="train")
+# Load model safely
+try:
+    model = AutoModelForCausalLM.from_pretrained(model_id)
+except Exception as e:
+    print(f"[ERROR] Failed to load model: {e}")
+    sys.exit(1)
 
-# Format prompt: instruction + input => output
+# Load dataset (handles s3:// or local path)
+try:
+    dataset = load_dataset("json", data_files=jsonl_path, split="train")
+except Exception as e:
+    print(f"[ERROR] Failed to load dataset: {e}")
+    sys.exit(1)
+
+# Prompt formatting
 def format_prompt(example):
     return f"### Instruction:\n{example['instruction']}\n\n### Input:\n{example['input']}\n\n### Response:\n{example['output']}"
 
@@ -29,10 +43,10 @@ def tokenize(example):
 lora_config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05)
 model = get_peft_model(model, lora_config)
 
-# Tokenize
+# Tokenize dataset
 tokenized_dataset = dataset.map(tokenize)
 
-# Training config
+# Training arguments
 output_dir = f"./artifacts/{model_id.replace('/', '_')}"
 args = TrainingArguments(
     output_dir=output_dir,
@@ -43,14 +57,19 @@ args = TrainingArguments(
     logging_dir='./logs'
 )
 
+# Trainer
 trainer = Trainer(
     model=model,
     args=args,
     train_dataset=tokenized_dataset
 )
 
+# Start training
 trainer.train()
 
-# Save model
-model.save_pretrained(os.path.join(output_dir, "finetuned"))
-tokenizer.save_pretrained(os.path.join(output_dir, "finetuned"))
+# Save model + tokenizer
+finetune_path = os.path.join(output_dir, "finetuned")
+model.save_pretrained(finetune_path)
+tokenizer.save_pretrained(finetune_path)
+
+print(f"[INFO] Fine-tuning completed. Model saved to {finetune_path}")
