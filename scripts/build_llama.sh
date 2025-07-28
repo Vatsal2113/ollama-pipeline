@@ -7,19 +7,17 @@ cd build
 
 echo "[INFO] CMake build started..."
 
-# Try building with CURL support and explicitly target quantize
-if cmake .. -DLLAMA_CURL=ON && cmake --build . --target quantize; then
-    echo "[SUCCESS] Build completed with CURL support, quantize target built."
-elif cmake .. && cmake --build . --target quantize; then
-    echo "[SUCCESS] Build completed without explicit CURL, quantize target built."
+# Try building with CURL support
+if cmake .. -DLLAMA_CURL=ON && cmake --build .; then
+    echo "[SUCCESS] Build completed with CURL support."
 else
-    echo "[WARN] Initial build of quantize failed. Retrying without CURL support..."
+    echo "[WARN] Initial build failed. Retrying without CURL support..."
     sleep 1
-    # Try building without CURL support and explicitly target quantize
-    if cmake .. -DLLAMA_CURL=OFF && cmake --build . --target quantize; then
-        echo "[SUCCESS] Quantize target built without CURL support."
+    # Try building without CURL support
+    if cmake .. -DLLAMA_CURL=OFF && cmake --build .; then
+        echo "[SUCCESS] Build completed without CURL support."
     else
-        echo "[ERROR] Failed to build quantize target even without CURL support."
+        echo "[ERROR] Failed to build llama.cpp."
         exit 1
     fi
 fi
