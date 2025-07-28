@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 cd /app/llama.cpp
 mkdir -p build
@@ -7,7 +7,6 @@ cd build
 
 echo "[INFO] CMake build started..."
 
-# Try with CURL enabled first
 if cmake .. && cmake --build .; then
     echo "[SUCCESS] Build completed with CURL support."
 else
@@ -17,7 +16,6 @@ else
     cmake --build .
 fi
 
-# Verify quantize exists
 if [ ! -f bin/quantize ]; then
     echo "[ERROR] quantize binary not found in /app/llama.cpp/build/bin/"
     ls -al bin/
