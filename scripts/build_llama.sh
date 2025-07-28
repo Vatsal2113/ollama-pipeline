@@ -21,7 +21,7 @@ echo "[INFO] Listing contents of /app/llama.cpp/build before make:"
 ls -al .
 
 echo "[INFO] Starting make build..."
-# Use make directly to build the project, which should include quantize
+# Use make directly to build the project, which should include llama-quantize
 if make; then
     echo "[SUCCESS] Make build completed."
 else
@@ -46,12 +46,13 @@ ls -al .
 echo "[INFO] Listing contents of /app/llama.cpp/build/bin after make:"
 ls -al bin/
 
-if [ ! -f bin/quantize ]; then
-    echo "[ERROR] quantize binary not found in /app/llama.cpp/build/bin/ after all build attempts."
+# Corrected: Check for 'llama-quantize' instead of 'quantize'
+if [ ! -f bin/llama-quantize ]; then
+    echo "[ERROR] llama-quantize binary not found in /app/llama.cpp/build/bin/ after all build attempts."
     echo "Current directory: $(pwd)"
     echo "Contents of bin/ directory:"
     ls -al bin/ || true # List even if bin doesn't exist or is empty
     exit 1
 fi
 
-echo "[✓] Build completed. Quantize tool at: /app/llama.cpp/build/bin/quantize"
+echo "[✓] Build completed. Quantize tool at: /app/llama.cpp/build/bin/llama-quantize"
