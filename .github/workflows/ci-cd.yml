@@ -17,7 +17,8 @@ jobs:
       uses: docker/setup-buildx-action@v2
 
     - name: Build Docker image
-      run: docker build -t ollama-lora -f docker/Dockerfile .
+      # Added --no-cache to force a fresh build and ensure updated build_llama.sh is used
+      run: docker build --no-cache -t ollama-lora -f docker/Dockerfile .
 
     - name: Run fine-tuning pipeline
       run: |
