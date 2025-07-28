@@ -5,26 +5,52 @@ cd /app/llama.cpp
 mkdir -p build
 cd build
 
-echo "[INFO] CMake build started..."
+echo "[INFO] CMake configuration started..."
 
-# Try building with CURL support
-if cmake .. -DLLAMA_CURL=ON && cmake --build .; then
-    echo "[SUCCESS] Build completed with CURL support."
+# Attempt CMake configuration with CURL support
+if cmake .. -DLLAMA_CURL=ON; then
+    echo "[SUCCESS] CMake configured with CURL support."
+elif cmake ..; then # Fallback to no explicit CURL if first fails
+    echo "[SUCCESS] CMake configured without explicit CURL support."
 else
-    echo "[WARN] Initial build failed. Retrying without CURL support..."
+    echo "[ERROR] CMake configuration failed."
+    exit 1
+fi
+
+echo "[INFO] Listing contents of /app/llama.cpp/build before make:"
+ls -al .
+
+echo "[INFO] Starting make build..."
+# Use make directly to build the project, which should include quantize
+if make; then
+    echo "[SUCCESS] Make build completed."
+else
+    echo "[ERROR] Make build failed. Retrying without CURL support if applicable."
     sleep 1
-    # Try building without CURL support
-    if cmake .. -DLLAMA_CURL=OFF && cmake --build .; then
-        echo "[SUCCESS] Build completed without CURL support."
+    # If make failed, try re-configuring CMake without CURL and then make again
+    cd .. # Go back to llama.cpp root
+    rm -rf build # Clean previous build artifacts
+    mkdir -p build
+    cd build
+    if cmake .. -DLLAMA_CURL=OFF && make; then
+        echo "[SUCCESS] Make build completed without CURL support."
     else
-        echo "[ERROR] Failed to build llama.cpp."
+        echo "[ERROR] Make build failed even after retrying without CURL support."
         exit 1
     fi
 fi
 
+echo "[INFO] Listing contents of /app/llama.cpp/build after make:"
+ls -al .
+
+echo "[INFO] Listing contents of /app/llama.cpp/build/bin after make:"
+ls -al bin/
+
 if [ ! -f bin/quantize ]; then
     echo "[ERROR] quantize binary not found in /app/llama.cpp/build/bin/ after all build attempts."
-    ls -al bin/
+    echo "Current directory: $(pwd)"
+    echo "Contents of bin/ directory:"
+    ls -al bin/ || true # List even if bin doesn't exist or is empty
     exit 1
 fi
 
