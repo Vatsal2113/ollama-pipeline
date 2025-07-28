@@ -17,9 +17,10 @@ COPY ../requirements.txt /app/requirements.txt
 # Install Python packages
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# Clone and build llama.cpp via script
+# Clone llama.cpp and build using external script
 RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp
-RUN chmod +x /app/scripts/build_llama.sh && /app/scripts/build_llama.sh
+COPY ../scripts/build_llama.sh /app/scripts/build_llama.sh
+RUN chmod +x /app/scripts/build_llama.sh && bash /app/scripts/build_llama.sh
 
 # Set default shell
 ENTRYPOINT ["/bin/bash"]

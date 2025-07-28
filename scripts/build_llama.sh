@@ -5,21 +5,23 @@ cd /app/llama.cpp
 mkdir -p build
 cd build
 
-echo "[INFO] Attempting to build llama.cpp tools (e.g., quantize)..."
+echo "[INFO] CMake build started..."
 
-# Try with CURL support
+# Try with CURL enabled first
 if cmake .. && cmake --build .; then
-    echo "[SUCCESS] Built with default settings"
+    echo "[SUCCESS] Build completed with CURL support."
 else
-    echo "[WARN] Failed. Retrying with -DLLAMA_CURL=OFF..."
+    echo "[WARN] Initial build failed. Retrying with -DLLAMA_CURL=OFF..."
+    sleep 1
     cmake .. -DLLAMA_CURL=OFF
     cmake --build .
 fi
 
-# Confirm quantize binary exists
+# Verify quantize exists
 if [ ! -f bin/quantize ]; then
-    echo "[ERROR] quantize tool not found after build."
+    echo "[ERROR] quantize binary not found in /app/llama.cpp/build/bin/"
+    ls -al bin/
     exit 1
 fi
 
-echo "[✓] quantize built successfully at: /app/llama.cpp/build/bin/quantize"
+echo "[✓] Build completed. Quantize tool at: /app/llama.cpp/build/bin/quantize"
