@@ -1,47 +1,29 @@
-name: Lora Finetune Pipeline
+name: Ollama Lora Pipeline
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:  # allow manual runs too
 
 jobs:
-  train-multiple:
+  build-and-run:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        model: [tiiuae/falcon-7b, openlm-research/open_llama_3b]
-
-    env:
-      AWS_REGION: us-east-2
-      JSONL_PATH: /opt/ml/input/data/train.jsonl
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Build Docker image
+      run: docker build -t ollama-lora -f docker/Dockerfile .
 
-      - name: Build Docker image
-        run: |
-          docker build -t lora-finetune -f docker/Dockerfile .
-
-      - name: Run training pipeline
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}/src:/opt/ml/code \
-            -v ${{ github.workspace }}/scripts:/opt/ml/input/scripts \
-            -v ${{ github.workspace }}/data:/opt/ml/input/data \
-            -v ${{ github.workspace }}/artifacts:/opt/ml/output \
-            lora-finetune \
-            bash /opt/ml/input/scripts/pipeline.sh "${{ matrix.model }}" "${{ env.JSONL_PATH }}"
+    - name: Run fine-tuning pipeline
+      run: |
+        docker run --rm \
+          -e AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+          -e AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+          -v ${{ github.workspace }}:/app \
+          ollama-lora \
+          scripts/pipeline.sh openlm-research/open_llama_3b data/train.jsonl

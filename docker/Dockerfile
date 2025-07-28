@@ -3,7 +3,7 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (include g++)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
+# Copy your app code
 COPY ../src /app/src
 COPY ../scripts /app/scripts
 COPY ../requirements.txt /app/requirements.txt
@@ -27,9 +27,12 @@ COPY ../requirements.txt /app/requirements.txt
 # Install Python dependencies
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# Clone llama.cpp and build GGUF tool
+# Clone llama.cpp and build using CMake
 RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp && \
-    cd /app/llama.cpp && make
+    mkdir -p /app/llama.cpp/build && \
+    cd /app/llama.cpp/build && \
+    cmake .. && \
+    cmake --build . --target quantize
 
-# Entry shell
+# Set entrypoint
 ENTRYPOINT ["/bin/bash"]
