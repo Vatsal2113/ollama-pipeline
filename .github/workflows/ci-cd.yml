@@ -36,6 +36,7 @@ jobs:
 
     - name: Run fine-tuning pipeline for Model 1 on SageMaker
       run: |
+        chmod +x scripts/pipeline.sh # Ensure execute permission
         scripts/pipeline.sh openlm-research/open_llama_3b data/train.jsonl
 
   finetune-model-2:
@@ -54,4 +55,5 @@ jobs:
 
     - name: Run fine-tuning pipeline for Model 2 on SageMaker
       run: |
+        chmod +x scripts/pipeline.sh # Ensure execute permission
         scripts/pipeline.sh distilbert-base-uncased data/train.jsonl # Updated model name
