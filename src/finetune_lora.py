@@ -38,6 +38,9 @@ try:
     if model.config.pad_token_id is None and tokenizer.pad_token_id is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
+    # Disable use_cache for training to save memory (already present, good for memory)
+    model.config.use_cache = False
+
 except Exception as e:
     print(f"[ERROR] Failed to load model for {model_id}: {e}")
     sys.exit(1)
@@ -62,14 +65,9 @@ def format_prompt(example):
 # Tokenize dataset
 def tokenize(example):
     prompt = format_prompt(example)
-    # Tokenize the prompt
-    # return_tensors="pt" is handled by DataCollator, so remove it here
-    tokenized_output = tokenizer(prompt, padding="max_length", truncation=True, max_length=512)
+    # Tokenize the prompt with reduced max_length
+    tokenized_output = tokenizer(prompt, padding="max_length", truncation=True, max_length=256) # Reduced max_length
     
-    # For causal language modeling, labels are typically the input_ids themselves.
-    # The DataCollatorForLanguageModeling will handle the shifting of labels internally for loss calculation.
-    # We don't need to clone input_ids to labels here if using DataCollatorForLanguageModeling
-    # as it expects input_ids and creates labels from them.
     return tokenized_output
 
 # Apply LoRA
@@ -92,13 +90,14 @@ output_dir = f"./artifacts/{model_id.replace('/', '_')}"
 training_args = TrainingArguments(
     output_dir=output_dir,
     num_train_epochs=2,
-    per_device_train_batch_size=2,
+    per_device_train_batch_size=1, # Reduced batch size
+    gradient_accumulation_steps=2, # Added gradient accumulation
     save_steps=20,
     save_total_limit=1,
     logging_dir='./logs',
     logging_steps=10,
-    # Add a data collator if needed, but the default should work for simple cases with labels
-    # data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    fp16=False, # Set to True if your environment supports it (e.g., GPU) for memory savings
+    gradient_checkpointing=True, # Enabled gradient checkpointing for memory efficiency
 )
 
 # Initialize Trainer
