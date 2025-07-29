@@ -10,21 +10,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy your source, scripts, and requirements
-COPY ../src /app/src
-COPY ../scripts /app/scripts
-COPY ../requirements.txt /app/requirements.txt
+# SageMaker expects the training script at /opt/ml/code
+COPY src /opt/ml/code/src
+COPY scripts /opt/ml/code/scripts
+COPY requirements.txt /opt/ml/code/requirements.txt
 
 # Install Python dependencies
-RUN pip install --upgrade pip && pip install -r /app/requirements.txt
+# Unsloth will try to install the correct torch version (CPU or CUDA) based on environment
+RUN pip install --upgrade pip && pip install -r /opt/ml/code/requirements.txt
 
-# Clone llama.cpp before running build script!
-RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp
-
-# Copy and run the build script for llama.cpp
-COPY ../scripts/build_llama.sh /app/scripts/build_llama.sh
-RUN chmod +x /app/scripts/build_llama.sh && bash -x /app/scripts/build_llama.sh && \
-    echo "--- Debugging: Contents of /app/llama.cpp/build/bin after build_llama.sh ---" && \
-    ls -al /app/llama.cpp/build/bin/ || true && \
-    echo "-----------------------------------------------------------------------"
-
+# Set the entrypoint for SageMaker training job
+# SageMaker will execute 'python3 /opt/ml/code/src/finetune_lora.py'
 ENTRYPOINT ["/bin/bash"]

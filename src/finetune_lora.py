@@ -1,126 +1,128 @@
-import sys
+import torch
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
-from peft import LoraConfig, get_peft_model
+import sys
+from unsloth import FastLanguageModel
 from datasets import load_dataset
-import torch # Import torch for tensor operations
+from trl import SFTTrainer
+from transformers import TrainingArguments
 
-# Parse CLI arguments
-model_id = sys.argv[1]
-jsonl_path = sys.argv[2]
+# SageMaker provides input data in /opt/ml/input/data/<channel_name>/
+# We will use a 'training' channel
+SM_CHANNEL_TRAINING = os.environ.get("SM_CHANNEL_TRAINING", "/opt/ml/input/data/training")
+# SageMaker expects model artifacts to be saved to /opt/ml/model/
+SM_MODEL_DIR = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
 
-print(f"[INFO] Model: {model_id}")
-print(f"[INFO] Dataset: {jsonl_path}")
+# Parse CLI arguments (these will be passed as hyperparameters to SageMaker)
+# We'll expect model_id and jsonl_filename as hyperparameters
+model_id = os.environ.get("SM_HP_MODEL_ID", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+jsonl_filename = os.environ.get("SM_HP_JSONL_FILENAME", "train.jsonl")
 
-# Load tokenizer with safe fallback
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
-    # Add a pad token if it doesn't exist, which is common for some models
-    # It's often recommended to set pad_token to eos_token for causal LMs
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token:
-            tokenizer.pad_token = tokenizer.eos_token
-        else:
-            # Fallback if no eos_token is available
-            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-except Exception as e:
-    print(f"[ERROR] Failed to load tokenizer for {model_id}: {e}")
+jsonl_path = os.path.join(SM_CHANNEL_TRAINING, jsonl_filename)
+
+print(f"[INFO] Running on SageMaker. Model: {model_id}")
+print(f"[INFO] Dataset path: {jsonl_path}")
+print(f"[INFO] Model output directory: {SM_MODEL_DIR}")
+
+# Configuration for Unsloth
+max_seq_length = 256
+dtype = None # Auto-detects based on GPU availability (bf16, fp16, or fp32)
+load_in_4bit = True # Enable 4-bit quantization for memory savings
+
+# Ensure the model output directory exists
+os.makedirs(SM_MODEL_DIR, exist_ok=True)
+
+# Check if dataset file exists
+if not os.path.exists(jsonl_path):
+    print(f"\nERROR: Dataset file '{jsonl_path}' not found at SageMaker input path!")
     sys.exit(1)
 
-# Load model
+print("\nLoading base model and tokenizer with Unsloth...")
 try:
-    model = AutoModelForCausalLM.from_pretrained(model_id)
-    # If pad token was added after model load, resize embeddings here
-    if tokenizer.pad_token is not None and model.get_input_embeddings().num_embeddings < len(tokenizer):
-        model.resize_token_embeddings(len(tokenizer))
-    
-    # Ensure the model's pad_token_id is set for proper attention masking
-    if model.config.pad_token_id is None and tokenizer.pad_token_id is not None:
-        model.config.pad_token_id = tokenizer.pad_token_id
-
-    # Disable use_cache for training to save memory (already present, good for memory)
-    model.config.use_cache = False
-
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name = model_id,
+        max_seq_length = max_seq_length,
+        dtype = dtype,
+        load_in_4bit = load_in_4bit,
+    )
+    print("Model and tokenizer loaded.")
 except Exception as e:
-    print(f"[ERROR] Failed to load model for {model_id}: {e}")
+    print(f"[ERROR] Failed to load model or tokenizer for {model_id}: {e}")
     sys.exit(1)
 
+print("\nConfiguring LoRA adapters with Unsloth...")
+model = FastLanguageModel.get_peft_model(
+    model,
+    r = 16,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj"],
+    lora_alpha = 16,
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
+    random_state = 3407,
+)
+print("LoRA adapters configured.")
 
-# Load dataset (local or S3)
+print(f"\nLoading dataset from '{jsonl_path}'...")
 try:
-    dataset = load_dataset("json", data_files=jsonl_path, split="train")
+    raw_dataset = load_dataset("json", data_files=jsonl_path, split="train")
+    print(f"Dataset loaded. Number of examples: {len(raw_dataset)}")
 except Exception as e:
     print(f"[ERROR] Failed to load dataset from {jsonl_path}: {e}")
     sys.exit(1)
 
-# Format prompt: map 'question' to 'instruction' and 'answer' to 'output'
-# Your train.jsonl has 'question' and 'answer' keys.
-def format_prompt(example):
-    instruction = example.get('question', '')
-    response = example.get('answer', '')
-    
-    return f"### Instruction:\n{instruction}\n\n### Response:\n{response}"
+def formatting_prompts_func(examples):
+    questions = examples["question"]
+    answers = examples["answer"]
+    texts = []
+    for q, a in zip(questions, answers):
+        text = f"### Instruction:\n{q}\n\n### Response:\n{a}{tokenizer.eos_token}"
+        texts.append(text)
+    return {"text": texts}
 
+dataset = raw_dataset.map(formatting_prompts_func, batched=True)
+print(f"First formatted example for training:\n---\n{dataset[0]['text']}\n---")
 
-# Tokenize dataset
-def tokenize(example):
-    prompt = format_prompt(example)
-    # Tokenize the prompt with reduced max_length
-    tokenized_output = tokenizer(prompt, padding="max_length", truncation=True, max_length=256) # Reduced max_length
-    
-    return tokenized_output
-
-# Apply LoRA
-print("[INFO] Applying LoRA configuration...")
-lora_config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05)
-model = get_peft_model(model, lora_config)
-
-# IMPORTANT: Enable input gradients for gradient checkpointing with PEFT
-# This ensures that the inputs to the model require gradients, which is necessary
-# for the backward pass when using gradient checkpointing.
-model.enable_input_require_grads()
-
-
-# Tokenize dataset
-tokenized_dataset = dataset.map(tokenize, batched=False)
-
-# Initialize DataCollator for Language Modeling
-# This collator will handle padding and creating labels for causal LMs
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-
-# Training output path
-output_dir = f"./artifacts/{model_id.replace('/', '_')}"
-
-# Training setup
+print("\nDefining training arguments...")
 training_args = TrainingArguments(
-    output_dir=output_dir,
-    num_train_epochs=2,
-    per_device_train_batch_size=1, # Reduced batch size
-    gradient_accumulation_steps=2, # Added gradient accumulation
-    save_steps=20,
-    save_total_limit=1,
-    logging_dir='./logs',
-    logging_steps=10,
-    fp16=False, # Disabled fp16 as you don't have GPU hardware
-    gradient_checkpointing=True, # Enabled gradient checkpointing for memory efficiency
+    per_device_train_batch_size = 1,
+    gradient_accumulation_steps = 2,
+    warmup_steps = 5,
+    max_steps = 60,
+    learning_rate = 2e-4,
+    fp16 = not torch.cuda.is_bf16_supported(),
+    bf16 = torch.cuda.is_bf16_supported(),
+    logging_steps = 1,
+    output_dir = SM_MODEL_DIR, # SageMaker output directory for checkpoints
+    optim = "paged_adamw_8bit",
+    seed = 3407,
+    save_strategy = "no", # We'll save GGUF directly via unsloth
+    report_to = "none",
+)
+print("Training arguments defined.")
+
+print("\nStarting fine-tuning...")
+trainer = SFTTrainer(
+    model = model,
+    train_dataset = dataset,
+    tokenizer = tokenizer,
+    max_seq_length = max_seq_length,
+    dataset_text_field = "text",
+    args = training_args,
 )
 
-# Initialize Trainer
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_dataset,
-    data_collator=data_collator, # Pass the data collator here
-)
+try:
+    trainer.train()
+    print("Fine-tuning complete.")
+except Exception as e:
+    print(f"[ERROR] Fine-tuning failed: {e}")
+    sys.exit(1)
 
-# Start training
-print("[INFO] Starting training...")
-trainer.train()
+print(f"\nSaving fine-tuned model to {SM_MODEL_DIR} in GGUF format...")
+# Unsloth saves the GGUF file directly into the specified directory
+# The filename will be automatically generated (e.g., model-q4_k_m.gguf)
+model.save_pretrained_gguf(SM_MODEL_DIR, tokenizer = tokenizer, quantization_method = "q4_k_m")
 
-# Save fine-tuned model and tokenizer
-finetuned_path = os.path.join(output_dir, "finetuned")
-model.save_pretrained(finetuned_path)
-tokenizer.save_pretrained(finetuned_path)
+print(f"[✓] Fine-tuned GGUF model saved to: {SM_MODEL_DIR}/")
 
-print(f"[✓] Fine-tuned model saved to {finetuned_path}")
+# SageMaker will automatically upload contents of SM_MODEL_DIR to S3
