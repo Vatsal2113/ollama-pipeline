@@ -22,6 +22,9 @@ RUN git clone https://github.com/ggerganov/llama.cpp.git /app/llama.cpp
 
 # Copy and run the build script for llama.cpp
 COPY ../scripts/build_llama.sh /app/scripts/build_llama.sh
-RUN chmod +x /app/scripts/build_llama.sh && bash -x /app/scripts/build_llama.sh
+RUN chmod +x /app/scripts/build_llama.sh && bash -x /app/scripts/build_llama.sh && \
+    echo "--- Debugging: Contents of /app/llama.cpp/build/bin after build_llama.sh ---" && \
+    ls -al /app/llama.cpp/build/bin/ || true && \
+    echo "-----------------------------------------------------------------------"
 
 ENTRYPOINT ["/bin/bash"]
