@@ -28,7 +28,6 @@ jobs:
     - name: Build Docker image
       # Ensure build context is the repository root ('.')
       # and explicitly point to the Dockerfile in the 'docker/' subdirectory.
-      # Fixed YAML syntax error by quoting the run command.
       run: "docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile ."
 
   finetune-model-1:
@@ -67,4 +66,4 @@ jobs:
     - name: Run fine-tuning pipeline for Model 2 on SageMaker
       run: |
         chmod +x scripts/pipeline.sh # Ensure execute permission
-        scripts/pipeline.sh distilbert-base-uncased data/train.jsonl # Updated model name
+        scripts/pipeline.sh distilbert-base-uncased data/train.jsonl
