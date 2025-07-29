@@ -16,9 +16,8 @@ jobs:
       uses: docker/setup-buildx-action@v2
 
     - name: Build Docker image
-      # Added --no-cache to force a fresh build and ensure updated scripts are used
-      # Corrected Dockerfile path to 'docker/Dockerfile'
-      run: docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile .
+      # Using absolute path for Dockerfile and explicit build context
+      run: docker build --no-cache -t ollama-lora-sagemaker -f ${{ github.workspace }}/docker/Dockerfile ${{ github.workspace }}
 
   finetune-model-1:
     runs-on: ubuntu-latest
