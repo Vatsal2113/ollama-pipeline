@@ -28,7 +28,8 @@ jobs:
     - name: Build Docker image
       # Ensure build context is the repository root ('.')
       # and explicitly point to the Dockerfile in the 'docker/' subdirectory.
-      run: docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile .
+      # Fixed YAML syntax error by quoting the run command.
+      run: "docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile ."
 
   finetune-model-1:
     runs-on: ubuntu-latest
