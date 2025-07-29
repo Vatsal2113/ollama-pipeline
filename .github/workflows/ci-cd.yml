@@ -16,10 +16,9 @@ jobs:
       uses: docker/setup-buildx-action@v2
 
     - name: Build Docker image
-      # Change directory to 'docker' first, then build from '.' context
-      run: |
-        cd docker
-        docker build --no-cache -t ollama-lora-sagemaker .
+      # Ensure build context is the repository root ('.')
+      # and explicitly point to the Dockerfile in the 'docker/' subdirectory.
+      run: docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile .
 
   finetune-model-1:
     runs-on: ubuntu-latest
