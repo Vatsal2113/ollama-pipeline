@@ -17,7 +17,8 @@ jobs:
 
     - name: Build Docker image
       # Added --no-cache to force a fresh build and ensure updated scripts are used
-      run: docker build --no-cache -t ollama-lora-sagemaker -f Dockerfile .
+      # Corrected Dockerfile path to 'docker/Dockerfile'
+      run: docker build --no-cache -t ollama-lora-sagemaker -f docker/Dockerfile .
 
   finetune-model-1:
     runs-on: ubuntu-latest
