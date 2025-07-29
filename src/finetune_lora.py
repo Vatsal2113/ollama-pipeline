@@ -14,6 +14,11 @@ print(f"[INFO] Dataset: {jsonl_path}")
 # Load tokenizer with safe fallback
 try:
     tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+    # Add a pad token if it doesn't exist, which is common for some models
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+        # Resize model embeddings to account for the new token
+        # model.resize_token_embeddings(len(tokenizer)) # This line would be needed if model was loaded before tokenizer.
 except Exception as e:
     print(f"[ERROR] Failed to load tokenizer for {model_id}: {e}")
     sys.exit(1)
@@ -21,9 +26,13 @@ except Exception as e:
 # Load model
 try:
     model = AutoModelForCausalLM.from_pretrained(model_id)
+    # If pad token was added after model load, resize embeddings here
+    if tokenizer.pad_token is not None and model.get_input_embeddings().num_embeddings < len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
 except Exception as e:
     print(f"[ERROR] Failed to load model for {model_id}: {e}")
     sys.exit(1)
+
 
 # Load dataset (local or S3)
 try:
@@ -32,14 +41,26 @@ except Exception as e:
     print(f"[ERROR] Failed to load dataset from {jsonl_path}: {e}")
     sys.exit(1)
 
-# Format prompt: instruction + input => output
+# Format prompt: map 'question' to 'instruction' and 'answer' to 'output'
+# Your train.jsonl has 'question' and 'answer' keys.
 def format_prompt(example):
-    return f"### Instruction:\n{example['instruction']}\n\n### Input:\n{example['input']}\n\n### Response:\n{example['output']}"
+    # Assuming 'question' maps to 'instruction' and 'answer' maps to 'response'
+    # And there is no separate 'input' field in your current dataset structure.
+    # If 'input' is sometimes present, you'd need more complex logic.
+    instruction = example.get('question', '') # Use .get() with a default empty string for safety
+    response = example.get('answer', '')     # Use .get() with a default empty string for safety
+    
+    # Construct the prompt based on your desired format
+    # If you want an 'Input' section, you'd need to decide what data goes there.
+    # For now, I'm assuming 'Input' is not directly present and can be omitted or handled differently.
+    return f"### Instruction:\n{instruction}\n\n### Response:\n{response}"
+
 
 # Tokenize dataset
 def tokenize(example):
     prompt = format_prompt(example)
-    return tokenizer(prompt, padding="max_length", truncation=True, max_length=512)
+    # Ensure attention_mask is generated and padding is handled correctly
+    return tokenizer(prompt, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
 
 # Apply LoRA
 print("[INFO] Applying LoRA configuration...")
