@@ -1,6 +1,6 @@
 import sys
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling
 from peft import LoraConfig, get_peft_model
 from datasets import load_dataset
 import torch # Import torch for tensor operations
@@ -16,8 +16,13 @@ print(f"[INFO] Dataset: {jsonl_path}")
 try:
     tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
     # Add a pad token if it doesn't exist, which is common for some models
+    # It's often recommended to set pad_token to eos_token for causal LMs
     if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+        if tokenizer.eos_token:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            # Fallback if no eos_token is available
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 except Exception as e:
     print(f"[ERROR] Failed to load tokenizer for {model_id}: {e}")
     sys.exit(1)
@@ -28,6 +33,11 @@ try:
     # If pad token was added after model load, resize embeddings here
     if tokenizer.pad_token is not None and model.get_input_embeddings().num_embeddings < len(tokenizer):
         model.resize_token_embeddings(len(tokenizer))
+    
+    # Ensure the model's pad_token_id is set for proper attention masking
+    if model.config.pad_token_id is None and tokenizer.pad_token_id is not None:
+        model.config.pad_token_id = tokenizer.pad_token_id
+
 except Exception as e:
     print(f"[ERROR] Failed to load model for {model_id}: {e}")
     sys.exit(1)
@@ -53,12 +63,13 @@ def format_prompt(example):
 def tokenize(example):
     prompt = format_prompt(example)
     # Tokenize the prompt
-    tokenized_output = tokenizer(prompt, padding="max_length", truncation=True, max_length=512, return_tensors="pt")
+    # return_tensors="pt" is handled by DataCollator, so remove it here
+    tokenized_output = tokenizer(prompt, padding="max_length", truncation=True, max_length=512)
     
     # For causal language modeling, labels are typically the input_ids themselves.
-    # The Trainer will handle the shifting of labels internally for loss calculation.
-    tokenized_output["labels"] = tokenized_output["input_ids"].clone()
-    
+    # The DataCollatorForLanguageModeling will handle the shifting of labels internally for loss calculation.
+    # We don't need to clone input_ids to labels here if using DataCollatorForLanguageModeling
+    # as it expects input_ids and creates labels from them.
     return tokenized_output
 
 # Apply LoRA
@@ -67,8 +78,12 @@ lora_config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05)
 model = get_peft_model(model, lora_config)
 
 # Tokenize dataset
-# Use .map(..., batched=True) for potentially faster tokenization if your dataset is large
-tokenized_dataset = dataset.map(tokenize, batched=False) # Changed to batched=False for simpler debugging initially
+tokenized_dataset = dataset.map(tokenize, batched=False)
+
+# Initialize DataCollator for Language Modeling
+# This collator will handle padding and creating labels for causal LMs
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
 
 # Training output path
 output_dir = f"./artifacts/{model_id.replace('/', '_')}"
@@ -91,6 +106,7 @@ trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=tokenized_dataset,
+    data_collator=data_collator, # Pass the data collator here
 )
 
 # Start training
