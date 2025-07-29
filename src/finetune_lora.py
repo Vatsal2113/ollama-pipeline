@@ -75,6 +75,12 @@ print("[INFO] Applying LoRA configuration...")
 lora_config = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05)
 model = get_peft_model(model, lora_config)
 
+# IMPORTANT: Enable input gradients for gradient checkpointing with PEFT
+# This ensures that the inputs to the model require gradients, which is necessary
+# for the backward pass when using gradient checkpointing.
+model.enable_input_require_grads()
+
+
 # Tokenize dataset
 tokenized_dataset = dataset.map(tokenize, batched=False)
 
@@ -96,7 +102,7 @@ training_args = TrainingArguments(
     save_total_limit=1,
     logging_dir='./logs',
     logging_steps=10,
-    fp16=False, # Set to True if your environment supports it (e.g., GPU) for memory savings
+    fp16=False, # Disabled fp16 as you don't have GPU hardware
     gradient_checkpointing=True, # Enabled gradient checkpointing for memory efficiency
 )
 
