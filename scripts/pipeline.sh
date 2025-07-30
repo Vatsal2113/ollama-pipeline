@@ -25,7 +25,7 @@ echo "[*] Logging in to ECR..."
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID".dkr.ecr."$AWS_REGION".amazonaws.com
 
 echo "[*] Building Docker image for SageMaker..."
-docker build -t "$ECR_REPO_NAME" -f Dockerfile .
+docker build -t "$ECR_REPO_NAME" .
 
 echo "[*] Tagging Docker image..."
 docker tag "$ECR_REPO_NAME" "$AWS_ACCOUNT_ID".dkr.ecr."$AWS_REGION".amazonaws.com/"$ECR_REPO_NAME":latest
