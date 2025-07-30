@@ -1,0 +1,30 @@
+version: '3'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  pipeline:
+    build: .
+    depends_on:
+      - ollama
+    environment:
+      - S3_BUCKET=${S3_BUCKET:-ollama-lora-pipeline}
+      - MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      # Uncomment to enable finetuning
+      # - FINETUNE_MODEL=mistralai/Mistral-7B-v0.1
+      # - TRAINING_DATA=s3://your-bucket/training-data/
+    volumes:
+      - ./models:/app/models
+
+volumes:
+  ollama_data:
