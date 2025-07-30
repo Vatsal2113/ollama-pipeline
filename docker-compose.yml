@@ -9,11 +9,18 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   pipeline:
     build: .
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       - S3_BUCKET=ollama-lora-pipeline
       - MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
