@@ -10,7 +10,7 @@ import boto3
 import sagemaker
 from sagemaker.huggingface import HuggingFace
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def setup_args():
@@ -26,13 +26,34 @@ def finetune_model(base_model, training_data, output_bucket, instance_type):
     """Finetune model using Amazon SageMaker"""
     logger.info(f"Setting up SageMaker finetuning for {base_model}")
     
-    role = sagemaker.get_execution_role()
-    
+    # Verify AWS session can be created
+    try:
+        boto_session = boto3.Session()
+        logger.info(f"AWS Account ID: {boto_session.client('sts').get_caller_identity()['Account']}")
+    except Exception as e:
+        logger.error(f"Error creating AWS session: {str(e)}")
+        raise
+        
     # Create a SageMaker session
-    session = sagemaker.Session()
+    try:
+        session = sagemaker.Session(boto_session=boto_session)
+        logger.info(f"SageMaker session created successfully")
+    except Exception as e:
+        logger.error(f"Error creating SageMaker session: {str(e)}")
+        raise
+    
+    # Get SageMaker execution role
+    try:
+        role = sagemaker.get_execution_role()
+        logger.info(f"Using SageMaker execution role: {role}")
+    except Exception as e:
+        logger.warning(f"Error getting SageMaker execution role: {str(e)}")
+        logger.warning("Using empty role string - AWS will use the role associated with your AWS credentials")
+        role = ""
     
     # Define output path
     s3_output_location = f"s3://{output_bucket}/finetuned-models/"
+    logger.info(f"Model output will be saved to: {s3_output_location}")
     
     # Define hyperparameters for LoRA finetuning
     hyperparameters = {
@@ -53,29 +74,40 @@ def finetune_model(base_model, training_data, output_bucket, instance_type):
         # Quantization for memory efficiency
         'load_in_8bit': True,
         
-        # Use Flash Attention when available
-        'use_flash_attention': False,  # Set to False for CPU
+        # Use Flash Attention when available (not for CPU)
+        'use_flash_attention': False,
     }
     
+    logger.info("Creating HuggingFace estimator...")
+    
     # Create HuggingFace estimator
-    huggingface_estimator = HuggingFace(
-        entry_point='train.py',
-        source_dir='./scripts/training_scripts',
-        instance_type=instance_type,
-        instance_count=1,
-        role=role,
-        transformers_version='4.28.1',
-        pytorch_version='2.0.0',
-        py_version='py39',
-        hyperparameters=hyperparameters,
-        output_path=s3_output_location,
-    )
+    try:
+        huggingface_estimator = HuggingFace(
+            entry_point='train.py',
+            source_dir='./scripts/training_scripts',
+            instance_type=instance_type,
+            instance_count=1,
+            role=role,
+            transformers_version='4.28.1',
+            pytorch_version='2.0.0',
+            py_version='py39',
+            hyperparameters=hyperparameters,
+            output_path=s3_output_location,
+        )
+        logger.info("HuggingFace estimator created successfully")
+    except Exception as e:
+        logger.error(f"Error creating HuggingFace estimator: {str(e)}")
+        raise
     
     # Start training
     logger.info("Starting SageMaker training job...")
-    huggingface_estimator.fit({'train': training_data})
-    
-    logger.info(f"Training complete! Model saved to {s3_output_location}")
+    try:
+        huggingface_estimator.fit({'train': training_data})
+        logger.info(f"Training complete! Model saved to {s3_output_location}")
+    except Exception as e:
+        logger.error(f"Error during SageMaker training: {str(e)}")
+        raise
+        
     return s3_output_location
 
 def main():

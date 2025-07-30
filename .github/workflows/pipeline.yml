@@ -13,9 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      # Create scripts directory if it doesn't exist
-      - name: Create scripts directory
-        run: mkdir -p scripts/training_scripts
+      # Create necessary directories
+      - name: Create required directories
+        run: |
+          mkdir -p scripts/training_scripts
+          mkdir -p models
       
       # Make all script files executable
       - name: Make script files executable
@@ -23,9 +25,18 @@ jobs:
           chmod +x pipeline.sh
           chmod +x extract_gguf.py
           chmod +x sagemaker_finetune.py
-          chmod +x scripts/quantize.py
-          chmod +x scripts/create_modelfile.py
-          chmod +x scripts/training_scripts/train.py
+          chmod +x scripts/quantize.py || true
+          chmod +x scripts/create_modelfile.py || true
+          chmod +x scripts/training_scripts/train.py || true
+      
+      # Debug environment 
+      - name: Debug Environment
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in scripts directory:"
+          ls -la scripts || echo "No scripts directory"
       
       # Use Docker CLI's built-in compose functionality
       - name: Build and run with Docker Compose
@@ -37,11 +48,14 @@ jobs:
           echo "Waiting for Ollama to initialize..."
           sleep 30
           
-          # Run the pipeline container
-          docker compose up pipeline
+          # Run the pipeline container with verbose output
+          docker compose up pipeline --verbose
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
           MODELS_TO_PULL: "llama2 mistral"
           FINETUNE_MODEL: "mistralai/Mistral-7B-v0.1"
           TRAINING_DATA: "s3://ollama-lora-pipeline/training-data/"
+          S3_BUCKET: "ollama-lora-pipeline"
+          DEBUG: "true"
