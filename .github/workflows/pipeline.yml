@@ -1,0 +1,28 @@
+name: Ollama Pipeline with SageMaker
+
+on:
+  push:
+    branches: [ main, add-pipeline-with-sagemaker1 ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build and run with Docker Compose
+        run: |
+          chmod +x pipeline.sh
+          chmod +x extract_gguf.py
+          chmod +x sagemaker_finetune.py
+          docker-compose up --build
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          MODELS_TO_PULL: "llama2 mistral"
