@@ -21,11 +21,12 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
 # Install Ollama
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
-# Install Python dependencies including SageMaker
-RUN pip3 install boto3 sagemaker transformers
-
 # Set working directory
 WORKDIR /app
+
+# Copy requirements first for better caching
+COPY src/requirements.txt ./src/requirements.txt
+RUN pip3 install -r src/requirements.txt
 
 # Copy scripts
 COPY pipeline.sh extract_gguf.py sagemaker_finetune.py ./
