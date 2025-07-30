@@ -46,7 +46,7 @@ echo "[*] Creating SageMaker training job: $SAGEMAKER_JOB_NAME"
 
 aws sagemaker create-training-job \
     --training-job-name "$SAGEMAKER_JOB_NAME" \
-    --hyperparameters "model_id=$MODEL_NAME,jsonl_filename=$JSONL_FILENAME" \
+    --hyperparameters "{\"model_id\":\"$MODEL_NAME\",\"jsonl_filename\":\"$JSONL_FILENAME\"}" \
     --algorithm-specification "TrainingImage=$ECR_IMAGE_URI,TrainingInputMode=File" \
     --role-arn "$SAGEMAKER_ROLE_ARN" \
     --input-data-config "[{ \"ChannelName\": \"training\", \"DataSource\": { \"S3DataSource\": { \"S3DataType\": \"S3Prefix\", \"S3Uri\": \"$S3_INPUT_DATA_URI\", \"S3DataDistributionType\": \"FullyReplicated\" } } }]" \
