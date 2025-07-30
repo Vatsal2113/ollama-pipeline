@@ -1,10 +1,11 @@
+---
 name: Model Training Pipeline
 
-on:
+"on":
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   train:
@@ -28,9 +29,38 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r ./src/requirements.txt
+          if [ -f "./requirements.txt" ]; then
+            pip install -r ./requirements.txt
+          else
+            echo "ERROR: requirements.txt not found"
+            exit 1
+          fi
 
       - name: Run pipeline script
         run: |
+          set -e
+          echo "Starting model training pipeline..."
+
+          if [ ! -f "./scripts/pipeline.sh" ]; then
+            echo "ERROR: pipeline.sh script not found at ./scripts/pipeline.sh"
+            exit 1
+          fi
+
+          if [ ! -f "./data/train.jsonl" ]; then
+            echo "ERROR: Training data not found at ./data/train.jsonl"
+            exit 1
+          fi
+
           chmod +x ./scripts/pipeline.sh
-          ./scripts/pipeline.sh "TinyLlama/TinyLlama-1.1B-Chat-v1.0" "./data/train.jsonl"
+          echo "Running pipeline with TinyLlama model and training data..."
+
+          # Run pipeline with error handling
+          if ! ./scripts/pipeline.sh \
+               "TinyLlama/TinyLlama-1.1B-Chat-v1.0" \
+               "./data/train.jsonl"; then
+            echo "ERROR: Pipeline execution failed"
+            echo "Please check the logs above for detailed error information"
+            exit 1
+          fi
+
+          echo "Pipeline completed successfully!"
