@@ -72,10 +72,11 @@ def finetune_model(base_model, training_data, output_bucket, instance_type='ml.g
         logger.error(f"Error creating AWS session: {str(e)}")
         raise
         
-    # Create a SageMaker session
+    # Create a SageMaker session with the specified bucket
     try:
-        session = sagemaker.Session(boto_session=boto_session)
-        logger.info(f"SageMaker session created successfully")
+        # Use the provided bucket instead of default
+        session = sagemaker.Session(boto_session=boto_session, default_bucket=output_bucket)
+        logger.info(f"SageMaker session created successfully with bucket: {output_bucket}")
     except Exception as e:
         logger.error(f"Error creating SageMaker session: {str(e)}")
         raise
@@ -84,14 +85,8 @@ def finetune_model(base_model, training_data, output_bucket, instance_type='ml.g
     try:
         role = os.environ.get("SAGEMAKER_ROLE_ARN")
         if not role:
-            logger.warning("SAGEMAKER_ROLE_ARN not found in environment variables")
-            try:
-                # Fall back to get_execution_role if environment variable is not set
-                role = sagemaker.get_execution_role()
-            except Exception as e:
-                logger.error(f"Failed to get default execution role: {str(e)}")
-                raise ValueError("A SageMaker execution role is required. Set SAGEMAKER_ROLE_ARN environment variable.")
-        
+            logger.error("SAGEMAKER_ROLE_ARN environment variable not set")
+            raise ValueError("SAGEMAKER_ROLE_ARN environment variable is required")
         logger.info(f"Using SageMaker execution role: {role}")
     except Exception as e:
         logger.error(f"Error getting SageMaker execution role: {str(e)}")
@@ -131,7 +126,8 @@ def finetune_model(base_model, training_data, output_bucket, instance_type='ml.g
             py_version='py39',
             hyperparameters=hyperparameters,
             environment=environment,
-            max_run=24 * 60 * 60  # 24 hours
+            max_run=24 * 60 * 60,  # 24 hours
+            sagemaker_session=session  # Pass the session with custom bucket
         )
         logger.info("HuggingFace estimator created successfully")
     except Exception as e:
