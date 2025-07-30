@@ -15,6 +15,7 @@ SAGEMAKER_JOB_NAME="ollama-lora-finetune-${MODEL_NAME//\//_}-$(date +%s)"
 S3_DATA_BUCKET="ollama-lora-pipeline" # Your existing S3 bucket for data/artifacts
 S3_DATA_PREFIX="sagemaker-input-data/${MODEL_NAME//\//_}" # Prefix for input data
 S3_OUTPUT_PREFIX="sagemaker-output-models/${MODEL_NAME//\//_}" # Prefix for SageMaker job output
+FINETUNED_UNSLOTH_DIR="/tmp/finetuned_models/${MODEL_NAME//\//_}" # Local directory to extract models
 
 echo "[*] Fine-tuning model: $MODEL_NAME"
 echo "[*] Dataset: $JSONL_PATH"
