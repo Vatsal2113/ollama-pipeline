@@ -15,6 +15,7 @@ SAGEMAKER_JOB_NAME="ollama-lora-finetune-${MODEL_NAME//\//_}-$(date +%s)"
 S3_DATA_BUCKET="ollama-lora-pipeline" # Your existing S3 bucket for data/artifacts
 S3_DATA_PREFIX="sagemaker-input-data/${MODEL_NAME//\//_}" # Prefix for input data
 S3_OUTPUT_PREFIX="sagemaker-output-models/${MODEL_NAME//\//_}" # Prefix for SageMaker job output
+FINETUNED_UNSLOTH_DIR="/tmp/sagemaker-output-${MODEL_NAME//\//_}-$(date +%s)" # Local directory for SageMaker artifacts
 
 echo "[*] Fine-tuning model: $MODEL_NAME"
 echo "[*] Dataset: $JSONL_PATH"
@@ -104,19 +105,34 @@ TARGET_GGUF_S3_PATH="s3://$S3_DATA_BUCKET/gguf/${OLLAMA_MODEL_NAME}.gguf"
 aws s3 cp "$GGUF_FILENAME" "$TARGET_GGUF_S3_PATH"
 echo "[✓] GGUF model copied to: $TARGET_GGUF_S3_PATH"
 
-# --- 6. Create and Upload Ollama Modelfile ---
-echo "[*] Creating Ollama Modelfile..."
+# --- 6. Create and Upload Ollama Modelfile using enhanced script ---
+echo "[*] Creating Ollama Modelfile using enhanced script..."
 MODFILE_LOCAL_PATH="${FINETUNED_UNSLOTH_DIR}/Modelfile"
 GGUF_BASENAME=$(basename "$GGUF_FILENAME") # Get just the filename for Modelfile
 
-cat > "${MODFILE_LOCAL_PATH}" <<EOF
-FROM ./${GGUF_BASENAME}
-PARAMETER temperature 0.7
-SYSTEM You are a helpful assistant.
-EOF
+# Use the enhanced modelfile generation script
+python3 scripts/generate_modelfile.py \
+    "${OLLAMA_MODEL_NAME}" \
+    "${GGUF_BASENAME}" \
+    "${MODFILE_LOCAL_PATH}" \
+    --temperature 0.7 \
+    --system-prompt "You are a helpful assistant trained on specialized data."
+
+if [ ! -f "${MODFILE_LOCAL_PATH}" ]; then
+    echo "[ERROR] Failed to generate Modelfile"
+    exit 1
+fi
 
 TARGET_MODFILE_S3_PATH="s3://$S3_DATA_BUCKET/modelfiles/${OLLAMA_MODEL_NAME}.Modelfile"
-aws s3 cp "${MODFILE_LOCAL_PATH}" "$TARGET_MODFILE_S3_PATH"
+
+# Use enhanced S3 upload script
+python3 scripts/s3_upload.py \
+    "${MODFILE_LOCAL_PATH}" \
+    "$S3_DATA_BUCKET" \
+    "modelfiles/${OLLAMA_MODEL_NAME}.Modelfile" \
+    --region "$AWS_REGION" \
+    --content-type "text/plain"
+
 echo "[✓] Modelfile uploaded to: $TARGET_MODFILE_S3_PATH"
 
 echo "[✓] Pipeline complete"
