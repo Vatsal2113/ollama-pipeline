@@ -25,8 +25,8 @@ RUN curl -fsSL https://ollama.com/install.sh | sh
 WORKDIR /app
 
 # Copy requirements first for better caching
-COPY src/requirements.txt ./src/requirements.txt
-RUN pip3 install -r src/requirements.txt
+COPY requirements.txt ./requirements.txt
+RUN pip3 install -r requirements.txt
 
 # Copy scripts
 COPY pipeline.sh extract_gguf.py sagemaker_finetune.py ./

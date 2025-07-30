@@ -1,10 +1,17 @@
-transformers>=4.30
-datasets
-peft
-accelerate
-sentencepiece
-boto3
-trl
-unsloth # Base unsloth package
-bitsandbytes # Required by unsloth for 4-bit quantization
-# torch will be installed by unsloth or can be added explicitly if issues arise
+# AWS and SageMaker dependencies
+boto3>=1.26.0
+sagemaker>=2.132.0
+awscli>=1.27.0
+
+# Machine learning dependencies
+torch>=1.13.0
+transformers>=4.26.0
+datasets>=2.10.0
+accelerate>=0.16.0
+evaluate>=0.4.0
+
+# Utilities
+requests>=2.28.0
+numpy>=1.24.0
+pandas>=1.5.0
+tqdm>=4.64.0
