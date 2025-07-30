@@ -57,4 +57,5 @@ jobs:
           TRAINING_DATA: "s3://ollama-lora-pipeline/training-data/"
           S3_BUCKET: "ollama-lora-pipeline"
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
+          TRAINING_INSTANCE_TYPE: "ml.m5.4xlarge"
           DEBUG: "true"
