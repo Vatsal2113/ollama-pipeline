@@ -1,0 +1,10 @@
+transformers>=4.30
+datasets
+peft
+accelerate
+sentencepiece
+boto3
+trl
+unsloth # Base unsloth package
+bitsandbytes # Required by unsloth for 4-bit quantization
+# torch will be installed by unsloth or can be added explicitly if issues arise
