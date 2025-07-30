@@ -2,8 +2,14 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir boto3 sagemaker pandas
+# Install system dependencies including curl
+RUN apt-update && \
+    apt-get install -y curl wget git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir boto3 sagemaker pandas transformers datasets peft
 
 # Copy necessary files
 COPY pipeline.sh /app/

@@ -25,6 +25,7 @@ services:
       - S3_BUCKET=${S3_BUCKET}
       - SAGEMAKER_ROLE_ARN=${SAGEMAKER_ROLE_ARN}
       - DEBUG=${DEBUG}
+      - CREATE_SAMPLE_DATA=true
     depends_on:
       - ollama
     volumes:
