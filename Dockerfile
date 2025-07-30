@@ -3,7 +3,7 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Install system dependencies including curl
-RUN apt-update && \
+RUN apt-get update && \
     apt-get install -y curl wget git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
