@@ -9,18 +9,12 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
+    # Removed healthcheck
 
   pipeline:
     build: .
     depends_on:
-      ollama:
-        condition: service_healthy
+      - ollama
     environment:
       - S3_BUCKET=ollama-lora-pipeline
       - MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
@@ -32,6 +26,7 @@ services:
       # - TRAINING_DATA=s3://ollama-lora-pipeline/training-data/
     volumes:
       - ./models:/app/models
+    # Removed healthcheck
 
 volumes:
   ollama_data:
