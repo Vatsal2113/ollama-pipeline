@@ -36,12 +36,13 @@ COPY scripts ./scripts/
 RUN chmod +x pipeline.sh extract_gguf.py sagemaker_finetune.py
 
 # Environment variables
-ENV S3_BUCKET="ollama-models-bucket"
+ENV S3_BUCKET="ollama-lora-pipeline"
+ENV AWS_REGION="us-east-2"
 ENV MODELS_TO_PULL="llama2 mistral"
 ENV OUTPUT_DIR="./models"
 # Set these to enable finetuning
 # ENV FINETUNE_MODEL="mistralai/Mistral-7B-v0.1"
-# ENV TRAINING_DATA="s3://your-bucket/training-data/"
+# ENV TRAINING_DATA="s3://ollama-lora-pipeline/training-data/"
 
 # Run the pipeline when container starts
 CMD ["./pipeline.sh"]

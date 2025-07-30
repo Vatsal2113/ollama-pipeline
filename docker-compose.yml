@@ -15,14 +15,14 @@ services:
     depends_on:
       - ollama
     environment:
-      - S3_BUCKET=${S3_BUCKET:-ollama-lora-pipeline}
+      - S3_BUCKET=ollama-lora-pipeline
       - MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_DEFAULT_REGION=us-east-2
       # Uncomment to enable finetuning
       # - FINETUNE_MODEL=mistralai/Mistral-7B-v0.1
-      # - TRAINING_DATA=s3://your-bucket/training-data/
+      # - TRAINING_DATA=s3://ollama-lora-pipeline/training-data/
     volumes:
       - ./models:/app/models
 
