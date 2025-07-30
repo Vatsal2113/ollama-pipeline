@@ -7,24 +7,25 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - ./ollama-data:/root/.ollama
     restart: unless-stopped
 
   pipeline:
-    build: .
-    depends_on:
-      - ollama
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeline
     environment:
-      - S3_BUCKET=${S3_BUCKET:-ollama-lora-pipeline}
-      - MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-2}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - MODELS_TO_PULL=${MODELS_TO_PULL}
       - FINETUNE_MODEL=${FINETUNE_MODEL}
       - TRAINING_DATA=${TRAINING_DATA}
-      - DEBUG=${DEBUG:-false}
+      - S3_BUCKET=${S3_BUCKET}
+      - SAGEMAKER_ROLE_ARN=${SAGEMAKER_ROLE_ARN}
+      - DEBUG=${DEBUG}
+    depends_on:
+      - ollama
     volumes:
-      - ./models:/app/models
-
-volumes:
-  ollama_data:
+      - ./scripts:/app/scripts
