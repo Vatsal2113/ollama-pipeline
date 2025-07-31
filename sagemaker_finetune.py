@@ -1,57 +1,59 @@
 #!/usr/bin/env python3
 import os
-import sys
-import boto3
-import logging
+import time
+import random
+import string
 import argparse
+import logging
+import boto3
 import sagemaker
 from sagemaker.huggingface import HuggingFace
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("sagemaker_finetune")
 
 def setup_args():
-    """Setup and parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Fine-tune a model using SageMaker')
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Fine-tune a model with SageMaker")
     
-    parser.add_argument('--base-model', type=str, required=True,
-                        help='Base model name or HuggingFace model ID')
+    parser.add_argument(
+        "--base-model",
+        required=True,
+        help="Base model to fine-tune (e.g., mistralai/Mistral-7B-v0-1)"
+    )
     
-    parser.add_argument('--training-data', type=str, required=True,
-                        help='S3 URI for training data')
+    parser.add_argument(
+        "--training-data",
+        required=True,
+        help="S3 URI of training data (e.g., s3://bucket/data/)"
+    )
     
-    parser.add_argument('--output-bucket', type=str, required=True,
-                        help='S3 bucket for output artifacts')
+    parser.add_argument(
+        "--output-bucket",
+        required=True,
+        help="S3 bucket for output model"
+    )
     
-    parser.add_argument('--instance-type', type=str, default='ml.m5.4xlarge',
-                        help='SageMaker instance type for training')
+    parser.add_argument(
+        "--instance-type",
+        default=os.environ.get("TRAINING_INSTANCE_TYPE", "ml.p3.2xlarge"),
+        help="SageMaker training instance type"
+    )
     
-    parser.add_argument('--max-train-samples', type=int, default=1000,
-                        help='Maximum number of training samples')
-    
-    parser.add_argument('--num-train-epochs', type=int, default=3,
-                        help='Number of training epochs')
-    
-    parser.add_argument('--per-device-train-batch-size', type=int, default=8,
-                        help='Per device training batch size')
-    
-    parser.add_argument('--gradient-accumulation-steps', type=int, default=4,
-                        help='Number of gradient accumulation steps')
-    
-    parser.add_argument('--learning-rate', type=float, default=2e-4,
-                        help='Learning rate')
-    
-    parser.add_argument('--output-model-name', type=str, default='finetuned-model',
-                        help='Name for the output model')
+    parser.add_argument(
+        "--max-runtime",
+        type=int,
+        default=86400,  # 24 hours
+        help="Maximum runtime in seconds"
+    )
     
     args = parser.parse_args()
     
-    # Log arguments
+    # Log the arguments
     logger.info(f"Base model: {args.base_model}")
     logger.info(f"Training data: {args.training_data}")
     logger.info(f"Output bucket: {args.output_bucket}")
@@ -59,107 +61,105 @@ def setup_args():
     
     return args
 
-def finetune_model(base_model, training_data, output_bucket, instance_type='ml.m5.4xlarge'):
-    """Finetune model using Amazon SageMaker"""
+def finetune_model(base_model, training_data, output_bucket, instance_type, max_runtime=86400):
+    """Fine-tune a model using SageMaker."""
     logger.info(f"Setting up SageMaker finetuning for {base_model}")
     
-    # Verify AWS session can be created
-    try:
-        boto_session = boto3.Session()
-        account_id = boto_session.client('sts').get_caller_identity()['Account']
-        logger.info(f"AWS Account ID: {account_id}")
-    except Exception as e:
-        logger.error(f"Error creating AWS session: {str(e)}")
-        raise
-        
-    # Create a SageMaker session with the specified bucket
-    try:
-        # Use the provided bucket instead of default
-        session = sagemaker.Session(boto_session=boto_session, default_bucket=output_bucket)
-        logger.info(f"SageMaker session created successfully with bucket: {output_bucket}")
-    except Exception as e:
-        logger.error(f"Error creating SageMaker session: {str(e)}")
-        raise
+    # Get the AWS account ID
+    account_id = boto3.client('sts').get_caller_identity().get('Account')
+    logger.info(f"AWS Account ID: {account_id}")
     
-    # Get SageMaker execution role from environment variable
-    try:
-        role = os.environ.get("SAGEMAKER_ROLE_ARN")
-        if not role:
-            logger.error("SAGEMAKER_ROLE_ARN environment variable not set")
-            raise ValueError("SAGEMAKER_ROLE_ARN environment variable is required")
-        logger.info(f"Using SageMaker execution role: {role}")
-    except Exception as e:
-        logger.error(f"Error getting SageMaker execution role: {str(e)}")
-        raise
+    # Set up SageMaker session
+    sagemaker_session = sagemaker.Session(default_bucket=output_bucket)
+    logger.info(f"SageMaker session created successfully with bucket: {output_bucket}")
+    
+    # Get the execution role from environment or use default
+    role = os.environ.get("SAGEMAKER_ROLE_ARN")
+    logger.info(f"Using SageMaker execution role: {role}")
     
     # Configure hyperparameters
     hyperparameters = {
-        'model_name_or_path': base_model,
-        'output_dir': '/opt/ml/model',
-        'max_train_samples': 1000,
-        'num_train_epochs': 3,
-        'per_device_train_batch_size': 8,
-        'gradient_accumulation_steps': 4,
-        'learning_rate': 2e-4,
-        'fp16': True,
+        "model_name_or_path": base_model,
+        "output_dir": "/opt/ml/model",
+        "num_train_epochs": 3,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 2e-5,
+        "fp16": True,
+        "save_strategy": "steps",
+        "save_steps": 500,
     }
     
-    # Set environment variables for the training container
-    environment = {
-        'TRAINING_DATA_PATH': training_data,
-        'USE_LORA': 'true',
-        'LORA_R': '16',
-        'LORA_ALPHA': '32',
-        'LORA_DROPOUT': '0.05',
-    }
+    # Set up the Hugging Face estimator
+    huggingface_estimator = HuggingFace(
+        entry_point="train.py",
+        source_dir="./scripts/training_scripts",
+        instance_type=instance_type,
+        instance_count=1,
+        role=role,
+        transformers_version="4.26",
+        pytorch_version="1.13",
+        py_version="py39",
+        hyperparameters=hyperparameters,
+        max_run=max_runtime,
+    )
+    logger.info("HuggingFace estimator created successfully")
     
-    # Create HuggingFace estimator
-    try:
-        huggingface_estimator = HuggingFace(
-            entry_point='train.py',
-            source_dir='./scripts/training_scripts',
-            instance_type=instance_type,
-            instance_count=1,
-            role=role,
-            transformers_version='4.28.1',
-            pytorch_version='2.0.0',
-            py_version='py310',
-            hyperparameters=hyperparameters,
-            environment=environment,
-            max_run=24 * 60 * 60,  # 24 hours
-            sagemaker_session=session  # Pass the session with custom bucket
-        )
-        logger.info("HuggingFace estimator created successfully")
-    except Exception as e:
-        logger.error(f"Error creating HuggingFace estimator: {str(e)}")
-        raise
+    # Create training job inputs
+    inputs = {"training": training_data}
     
     # Start the training job
     try:
-        job_name = f"{base_model.replace('/', '-')}-finetuned"
-        huggingface_estimator.fit(job_name=job_name)
+        # Generate a unique job name
+        timestamp = int(time.time())
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        job_name = f"{base_model.replace('/', '-').lower()}-{timestamp}-{random_suffix}"
+        
+        logger.info(f"Creating training-job with name: {job_name}")
+        huggingface_estimator.fit(inputs=inputs, job_name=job_name)
         logger.info(f"Training job {job_name} started successfully")
+        
+        try:
+            # Wait for job to complete
+            huggingface_estimator.wait(logs="All")
+            logger.info(f"Training job {job_name} completed")
+            
+            # Get model artifacts
+            model_artifacts = huggingface_estimator.model_data
+            logger.info(f"Model artifacts stored at: {model_artifacts}")
+            return model_artifacts, job_name
+        
+        except Exception as e:
+            logger.warning(f"Error waiting for job or accessing logs: {str(e)}")
+            logger.info(f"Training job {job_name} is running in the background")
+            logger.info(f"Check AWS SageMaker console for status and logs")
+            return None, job_name
+            
     except Exception as e:
         logger.error(f"Error starting training job: {str(e)}")
-        raise
-    
-    # Get the training job name
-    training_job_name = huggingface_estimator.latest_training_job.job_name
-    logger.info(f"Training job name: {training_job_name}")
-    
-    # Get the model artifacts from S3
-    model_artifacts = huggingface_estimator.model_data
-    logger.info(f"Model artifacts: {model_artifacts}")
-    
-    # Convert the finetuned model to GGUF format using a separate process
-    output_file = f"{output_bucket}/ollama-models/finetuned-{base_model.split('/')[-1]}.gguf"
-    logger.info(f"Output model will be saved to: {output_file}")
-    
-    return training_job_name, model_artifacts, output_file
+        raise e
 
 def main():
     args = setup_args()
-    finetune_model(args.base_model, args.training_data, args.output_bucket, args.instance_type)
+    try:
+        model_artifacts, job_name = finetune_model(
+            args.base_model, 
+            args.training_data, 
+            args.output_bucket, 
+            args.instance_type,
+            args.max_runtime
+        )
+        
+        if model_artifacts:
+            logger.info(f"Training completed successfully")
+            logger.info(f"Model artifacts: {model_artifacts}")
+        else:
+            logger.info(f"Training job {job_name} started but couldn't monitor progress")
+            logger.info("Please check the AWS SageMaker console for the job status")
+            
+    except Exception as e:
+        logger.error(f"Error during fine-tuning: {str(e)}")
+        exit(1)
 
 if __name__ == "__main__":
     main()
