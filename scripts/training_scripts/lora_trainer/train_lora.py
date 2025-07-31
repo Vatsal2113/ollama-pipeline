@@ -7,6 +7,7 @@ import sys
 import traceback
 import glob
 import torch
+import json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,15 +42,6 @@ def main():
         logger.info(f"Python version: {sys.version}")
         logger.info(f"PyTorch version: {torch.__version__}")
         
-        # Import libraries after logging versions
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoTokenizer,
-            Trainer,
-            TrainingArguments,
-            DataCollatorForLanguageModeling
-        )
-        
         # Parse arguments
         parser = argparse.ArgumentParser(description="Train a language model")
         parser.add_argument("--model_name_or_path", type=str, default="distilgpt2")
@@ -68,6 +60,13 @@ def main():
         # Log all arguments
         logger.info(f"Arguments: {args}")
         
+        # Import one module at a time to isolate import errors
+        logger.info("Importing AutoTokenizer...")
+        from transformers import AutoTokenizer
+        
+        logger.info("Importing AutoModelForCausalLM...")
+        from transformers import AutoModelForCausalLM
+        
         # Find training files
         training_files = find_training_files()
         logger.info(f"Using training files: {training_files}")
@@ -80,101 +79,86 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        
-        # Custom dataset implementation to avoid PyArrow issues
-        from torch.utils.data import Dataset
-        
-        class JsonlDataset(Dataset):
-            def __init__(self, file_paths, tokenizer, max_length=64):
-                self.examples = []
-                
-                for file_path in file_paths:
-                    logger.info(f"Loading data from {file_path}")
-                    try:
-                        with open(file_path, 'r') as f:
-                            for line in f:
-                                try:
-                                    # Handle different JSONL formats
-                                    import json
-                                    data = json.loads(line.strip())
-                                    # Check if 'text' field exists, if not try to find text content
-                                    if 'text' in data:
-                                        text = data['text']
-                                    elif 'content' in data:
-                                        text = data['content']
-                                    else:
-                                        # Use the first string field we find
-                                        for key, value in data.items():
-                                            if isinstance(value, str) and len(value) > 10:
-                                                text = value
-                                                break
-                                        else:
-                                            continue  # Skip this example if no suitable text found
-                                    
-                                    encodings = tokenizer(text, truncation=True, max_length=max_length, padding="max_length")
-                                    example = {key: torch.tensor(val) for key, val in encodings.items()}
-                                    self.examples.append(example)
-                                except Exception as e:
-                                    logger.warning(f"Error processing line: {e}")
-                                    continue
-                    except Exception as e:
-                        logger.error(f"Error loading file {file_path}: {e}")
-                
-                logger.info(f"Loaded {len(self.examples)} examples from {len(file_paths)} files")
-                
-                if not self.examples:
-                    logger.warning("No examples loaded, creating one dummy example")
-                    dummy_text = "This is a dummy example because no valid data was found."
-                    encodings = tokenizer(dummy_text, truncation=True, max_length=max_length, padding="max_length")
-                    example = {key: torch.tensor(val) for key, val in encodings.items()}
-                    self.examples.append(example)
             
-            def __len__(self):
-                return len(self.examples)
-            
-            def __getitem__(self, idx):
-                return self.examples[idx]
-        
-        # Load dataset
-        train_dataset = JsonlDataset(training_files, tokenizer)
-        logger.info(f"Dataset loaded with {len(train_dataset)} examples")
-        
         # Load model
         logger.info(f"Loading model: {model_name}")
         model = AutoModelForCausalLM.from_pretrained(model_name)
         logger.info(f"Model loaded successfully")
         
-        # Set up data collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer, 
-            mlm=False
-        )
+        # Super simplified training - just one epoch, one batch
+        logger.info("Starting simple training loop")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        model.train()
         
-        # Training arguments - simplified
-        training_args = TrainingArguments(
-            output_dir=args.output_dir,
-            per_device_train_batch_size=args.per_device_train_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            learning_rate=args.learning_rate,
-            num_train_epochs=args.num_train_epochs,
-            save_strategy="no",  # Don't save intermediate checkpoints
-            logging_steps=1,
-            remove_unused_columns=False
-        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
         
-        # Initialize trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            data_collator=data_collator,
-            tokenizer=tokenizer
-        )
-        
-        # Train model
-        logger.info("Starting training...")
-        trainer.train()
-        logger.info("Training completed successfully!")
+        # Process data and train
+        for file_path in training_files:
+            logger.info(f"Processing file: {file_path}")
+            examples = []
+            
+            # Read data
+            try:
+                with open(file_path, 'r') as f:
+                    for i, line in enumerate(f):
+                        if i >= 10:  # Just use first 10 examples for quick training
+                            break
+                        try:
+                            data = json.loads(line.strip())
+                            if 'text' in data:
+                                text = data['text']
+                            elif 'content' in data:
+                                text = data['content']
+                            else:
+                                continue
+                                
+                            # Simple tokenization
+                            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=64)
+                            inputs = {k: v.to(device) for k, v in inputs.items()}
+                            examples.append(inputs)
+                        except Exception as e:
+                            logger.warning(f"Error processing line: {e}")
+                            continue
+            except Exception as e:
+                logger.error(f"Error reading file {file_path}: {e}")
+            
+            # If no examples, create a dummy example
+            if not examples:
+                logger.warning("No examples found, creating dummy example")
+                dummy_text = "This is a dummy training example."
+                inputs = tokenizer(dummy_text, return_tensors="pt", truncation=True, max_length=64)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                examples.append(inputs)
+            
+            # Simple training loop
+            logger.info(f"Training on {len(examples)} examples")
+            for epoch in range(int(args.num_train_epochs)):
+                logger.info(f"Starting epoch {epoch+1}/{args.num_train_epochs}")
+                total_loss = 0
+                
+                for i, example in enumerate(examples):
+                    # Forward pass
+                    outputs = model(**example, labels=example["input_ids"])
+                    loss = outputs.loss
+                    total_loss += loss.item()
+                    
+                    # Backward pass
+                    loss.backward()
+                    
+                    # Update weights
+                    if (i + 1) % args.gradient_accumulation_steps == 0:
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        
+                    logger.info(f"Example {i+1}/{len(examples)}, Loss: {loss.item()}")
+                
+                # Make sure all gradients are applied
+                if len(examples) % args.gradient_accumulation_steps != 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    
+                logger.info(f"Epoch {epoch+1} completed, Average loss: {total_loss/len(examples)}")
         
         # Save model
         logger.info(f"Saving model to {args.output_dir}")
