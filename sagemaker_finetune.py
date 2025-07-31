@@ -81,9 +81,9 @@ def main():
             instance_type=args.instance_type,
             instance_count=1,
             role=role,
-            transformers_version='4.28.1',  # More recent version that might be pre-installed
-            pytorch_version='2.0.0',        # More recent version that might be pre-installed  
-            py_version='py310',             # More recent Python version
+            transformers_version='4.49.0',  # More recent version that might be pre-installed
+            pytorch_version='2.5.1',        # More recent version that might be pre-installed  
+            py_version='py311',             # More recent Python version
             hyperparameters=hyperparameters,
             debugger_hook_config=False
         )
