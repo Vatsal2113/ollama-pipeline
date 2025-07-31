@@ -50,12 +50,11 @@ jobs:
         run: |
           mkdir -p ./scripts/training_scripts
           
-          # Create run_qlora.py script for QLoRA fine-tuning
-          cat > ./scripts/training_scripts/run_qlora.py << 'EOF'
+          # Create simplified QLoRA script
+          cat > ./scripts/training_scripts/run_qlora_simple.py << 'EOF'
           #!/usr/bin/env python3
           import os
           import sys
-          import glob
           import json
           import traceback
           import argparse
@@ -66,6 +65,7 @@ jobs:
               Trainer,
               TrainingArguments,
               BitsAndBytesConfig,
+              default_data_collator,
               set_seed,
           )
           from datasets import load_dataset
@@ -74,7 +74,6 @@ jobs:
               prepare_model_for_kbit_training,
               get_peft_model,
           )
-          from trl import SFTTrainer
 
           def log_error(e):
               print(f"ERROR: {str(e)}")
@@ -126,6 +125,16 @@ jobs:
               
               return jsonl_files
 
+          def preprocess_function(examples, tokenizer, max_length=512):
+              """Tokenize the input text."""
+              return tokenizer(
+                  examples["text"],
+                  truncation=True,
+                  max_length=max_length,
+                  padding="max_length",
+                  return_tensors=None,
+              )
+
           def main():
               try:
                   # Parse arguments
@@ -154,12 +163,27 @@ jobs:
                   
                   # Load dataset
                   print(f"Loading dataset from {len(jsonl_files)} files...")
-                  train_dataset = load_dataset("json", data_files=jsonl_files, split="train")
-                  print(f"Loaded dataset with {len(train_dataset)} examples")
+                  raw_dataset = load_dataset("json", data_files=jsonl_files, split="train")
+                  print(f"Loaded dataset with {len(raw_dataset)} examples")
                   
                   # Print a sample
-                  if len(train_dataset) > 0:
-                      print(f"Dataset sample: {train_dataset[0]}")
+                  if len(raw_dataset) > 0:
+                      print(f"Dataset sample: {raw_dataset[0]}")
+                  
+                  # Load tokenizer first to tokenize the dataset
+                  print(f"Loading tokenizer from {args.model_name_or_path}")
+                  tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+                  if tokenizer.pad_token is None:
+                      tokenizer.pad_token = tokenizer.eos_token
+                      
+                  # Tokenize the dataset
+                  print("Tokenizing dataset...")
+                  tokenized_dataset = raw_dataset.map(
+                      lambda examples: preprocess_function(examples, tokenizer),
+                      batched=True,
+                      remove_columns=["text"]
+                  )
+                  print(f"Tokenized dataset: {tokenized_dataset}")
                   
                   # Set up quantization configuration
                   compute_dtype = getattr(torch, args.bnb_4bit_compute_dtype)
@@ -180,11 +204,6 @@ jobs:
                       device_map="auto",
                       trust_remote_code=True
                   )
-                  
-                  # Load tokenizer
-                  tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-                  if tokenizer.pad_token is None:
-                      tokenizer.pad_token = tokenizer.eos_token
                   
                   # Prepare model for k-bit training
                   model = prepare_model_for_kbit_training(model)
@@ -220,13 +239,12 @@ jobs:
                       report_to="none"
                   )
                   
-                  # Set up SFT trainer for better handling of text data
-                  trainer = SFTTrainer(
+                  # Initialize trainer with a simple data collator
+                  trainer = Trainer(
                       model=model,
                       args=training_args,
-                      train_dataset=train_dataset,
-                      dataset_text_field="text",
-                      max_seq_length=512,
+                      train_dataset=tokenized_dataset,
+                      data_collator=default_data_collator,
                       tokenizer=tokenizer,
                   )
                   
@@ -249,15 +267,13 @@ jobs:
               main()
           EOF
           
-          # Create requirements.txt with trl for SFTTrainer
+          # Create requirements.txt with compatible versions
           cat > ./scripts/training_scripts/requirements.txt << 'EOF'
-          transformers==4.49.0
-          accelerate==0.30.0
-          peft==0.9.0
-          bitsandbytes==0.43.0
-          trl==0.7.11
-          datasets==2.19.0
-          torch==2.5.1
+          transformers==4.28.1
+          accelerate==0.20.3
+          peft==0.4.0
+          bitsandbytes==0.40.2
+          datasets==2.12.0
           scipy
           scikit-learn
           sentencepiece

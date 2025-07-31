@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-import glob
 import json
 import traceback
 import argparse
@@ -12,6 +11,7 @@ from transformers import (
     Trainer,
     TrainingArguments,
     BitsAndBytesConfig,
+    default_data_collator,
     set_seed,
 )
 from datasets import load_dataset
@@ -20,7 +20,6 @@ from peft import (
     prepare_model_for_kbit_training,
     get_peft_model,
 )
-from trl import SFTTrainer
 
 def log_error(e):
     print(f"ERROR: {str(e)}")
@@ -72,6 +71,16 @@ def find_jsonl_files():
     
     return jsonl_files
 
+def preprocess_function(examples, tokenizer, max_length=512):
+    """Tokenize the input text."""
+    return tokenizer(
+        examples["text"],
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+        return_tensors=None,
+    )
+
 def main():
     try:
         # Parse arguments
@@ -100,12 +109,27 @@ def main():
         
         # Load dataset
         print(f"Loading dataset from {len(jsonl_files)} files...")
-        train_dataset = load_dataset("json", data_files=jsonl_files, split="train")
-        print(f"Loaded dataset with {len(train_dataset)} examples")
+        raw_dataset = load_dataset("json", data_files=jsonl_files, split="train")
+        print(f"Loaded dataset with {len(raw_dataset)} examples")
         
         # Print a sample
-        if len(train_dataset) > 0:
-            print(f"Dataset sample: {train_dataset[0]}")
+        if len(raw_dataset) > 0:
+            print(f"Dataset sample: {raw_dataset[0]}")
+        
+        # Load tokenizer first to tokenize the dataset
+        print(f"Loading tokenizer from {args.model_name_or_path}")
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            
+        # Tokenize the dataset
+        print("Tokenizing dataset...")
+        tokenized_dataset = raw_dataset.map(
+            lambda examples: preprocess_function(examples, tokenizer),
+            batched=True,
+            remove_columns=["text"]
+        )
+        print(f"Tokenized dataset: {tokenized_dataset}")
         
         # Set up quantization configuration
         compute_dtype = getattr(torch, args.bnb_4bit_compute_dtype)
@@ -126,11 +150,6 @@ def main():
             device_map="auto",
             trust_remote_code=True
         )
-        
-        # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
         
         # Prepare model for k-bit training
         model = prepare_model_for_kbit_training(model)
@@ -166,13 +185,12 @@ def main():
             report_to="none"
         )
         
-        # Set up SFT trainer for better handling of text data
-        trainer = SFTTrainer(
+        # Initialize trainer with a simple data collator
+        trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=train_dataset,
-            dataset_text_field="text",
-            max_seq_length=512,
+            train_dataset=tokenized_dataset,
+            data_collator=default_data_collator,
             tokenizer=tokenizer,
         )
         
