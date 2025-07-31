@@ -15,9 +15,9 @@ on:
         description: 'Base model to fine-tune'
         default: 'mistralai/Mistral-7B-v0-1'
         required: true
-      training_data:
-        description: 'Path to training data in S3'
-        default: 's3://your-bucket/data/train.jsonl'
+      training_data_path:
+        description: 'Path to training data within bucket (e.g., data/train.jsonl)'
+        default: 'data/train.jsonl'
         required: true
       instance_type:
         description: 'SageMaker instance type'
@@ -38,7 +38,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -134,17 +134,22 @@ jobs:
           torch>=2.5.0
           EOF
 
-      - name: Fine-tune Model with SageMaker
+      - name: Construct S3 URI and Fine-tune Model
         id: finetune
         env:
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
           TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}
+          S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
+          # Construct proper S3 URI for training data
+          TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/${{ github.event.inputs.training_data_path }}"
+          echo "Using training data from: $TRAINING_DATA_URI"
+          
           # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
             --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }}" \
-            --training-data "${{ github.event.inputs.training_data }}" \
-            --output-bucket "${{ secrets.S3_BUCKET_NAME }}" \
+            --training-data "$TRAINING_DATA_URI" \
+            --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}"
           
           # Get the training job name
@@ -175,33 +180,34 @@ jobs:
           echo "eval_file=evaluation_results.json" >> $GITHUB_OUTPUT
 
       - name: Upload to S3
+        env:
+          S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
           MODEL_NAME=${{ github.event.inputs.model_name || 'mistral-custom' }}
-          BUCKET_NAME="${{ secrets.S3_BUCKET_NAME }}"
           
           # Create timestamp for versioning
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           
           # Create directories in S3 if they don't exist
-          aws s3api put-object --bucket $BUCKET_NAME --key models/${MODEL_NAME}/${TIMESTAMP}/
-          aws s3api put-object --bucket $BUCKET_NAME --key models/${MODEL_NAME}/latest/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key models/${MODEL_NAME}/${TIMESTAMP}/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key models/${MODEL_NAME}/latest/
           
           # Upload GGUF model
-          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/${MODEL_NAME}.gguf
+          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/${MODEL_NAME}.gguf
           
           # Upload Modelfile
-          aws s3 cp ./Modelfile s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/Modelfile
+          aws s3 cp ./Modelfile s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/Modelfile
           
           # Upload evaluation results
-          aws s3 cp ./evaluation_results.json s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/evaluation_results.json
+          aws s3 cp ./evaluation_results.json s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/evaluation_results.json
           
           # Update "latest" pointer
-          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/${MODEL_NAME}.gguf
-          aws s3 cp ./Modelfile s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/Modelfile
-          aws s3 cp ./evaluation_results.json s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/evaluation_results.json
+          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/${MODEL_NAME}.gguf
+          aws s3 cp ./Modelfile s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/Modelfile
+          aws s3 cp ./evaluation_results.json s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/evaluation_results.json
           
-          echo "Model artifacts uploaded to: s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/"
-          echo "Latest model available at: s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/"
+          echo "Model artifacts uploaded to: s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/"
+          echo "Latest model available at: s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/"
 
       - name: Generate Report
         run: |
