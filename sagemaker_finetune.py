@@ -102,6 +102,7 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         py_version="py39",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
+        dependencies=["./scripts/training_scripts/requirements.txt"]
     )
     logger.info("HuggingFace estimator created successfully")
     
