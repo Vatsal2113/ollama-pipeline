@@ -12,8 +12,8 @@ on:
         default: 'gpt2-custom'
         required: true
       base_model:
-        description: 'Base model to fine-tune'
-        default: 'distilgpt2'
+        description: 'Base model to fine-tune (Ollama model name)'
+        default: 'llama2'
         required: true
       instance_type:
         description: 'SageMaker instance type'
@@ -39,18 +39,207 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.9'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install boto3 sagemaker huggingface-hub torch
+          pip install boto3 sagemaker huggingface-hub torch transformers peft
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          echo "Waiting for Ollama service to start..."
+          sleep 10
+          ollama --version
+
+      - name: Create Scripts Directory
+        run: |
+          mkdir -p ./scripts
+          
+          # Create the download_model.py script
+          cat > scripts/download_model.py << 'EOF'
+          #!/usr/bin/env python3
+          import argparse
+          import boto3
+          import os
+          import logging
+
+          # Configure logging
+          logging.basicConfig(
+              level=logging.INFO,
+              format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+          )
+          logger = logging.getLogger("download_model")
+
+          def setup_args():
+              """Parse command line arguments."""
+              parser = argparse.ArgumentParser(description="Download model from SageMaker job")
+              
+              parser.add_argument(
+                  "--job-name",
+                  required=True,
+                  help="SageMaker training job name"
+              )
+              
+              parser.add_argument(
+                  "--output-dir",
+                  required=True,
+                  help="Directory to save model files"
+              )
+              
+              return parser.parse_args()
+
+          def main():
+              args = setup_args()
+              try:
+                  logger.info(f"Downloading model from job: {args.job_name}")
+                  
+                  # Set up boto3 clients
+                  sm_client = boto3.client('sagemaker')
+                  s3_client = boto3.client('s3')
+                  
+                  # Get job info to find model artifacts
+                  job_info = sm_client.describe_training_job(TrainingJobName=args.job_name)
+                  model_uri = job_info['ModelArtifacts']['S3ModelArtifacts']
+                  logger.info(f"Model artifacts located at: {model_uri}")
+                  
+                  # Parse S3 URI
+                  bucket_name = model_uri.split('/')[2]
+                  key_prefix = '/'.join(model_uri.split('/')[3:]).replace('.tar.gz', '')
+                  
+                  # Create output directory
+                  os.makedirs(args.output_dir, exist_ok=True)
+                  
+                  # Download the model.tar.gz file
+                  local_tar_path = os.path.join(args.output_dir, "model.tar.gz")
+                  s3_client.download_file(bucket_name, key_prefix + '.tar.gz', local_tar_path)
+                  logger.info(f"Downloaded model archive to {local_tar_path}")
+                  
+                  # Extract the tar file
+                  import tarfile
+                  logger.info(f"Extracting model archive...")
+                  with tarfile.open(local_tar_path) as tar:
+                      tar.extractall(path=args.output_dir)
+                  
+                  # Remove the tar file
+                  os.remove(local_tar_path)
+                  logger.info(f"Extracted model to {args.output_dir}")
+                  
+              except Exception as e:
+                  logger.error(f"Error downloading model: {str(e)}")
+                  exit(1)
+
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          chmod +x scripts/download_model.py
+
+      - name: Pull Ollama Model and Export
+        run: |
+          # Create directory for model files
+          mkdir -p ./base-model
+          
+          # Pull the model from Ollama
+          echo "Pulling model ${{ github.event.inputs.base_model || 'llama2' }} from Ollama..."
+          ollama pull ${{ github.event.inputs.base_model || 'llama2' }}
+          
+          # Export the model files from Ollama
+          echo "Creating export script..."
+          cat > export_model.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import json
+          import subprocess
+          import sys
+          
+          model_name = sys.argv[1]
+          output_dir = sys.argv[2]
+          
+          # Get model info from Ollama
+          result = subprocess.run(['ollama', 'show', model_name, '--format', 'json'], 
+                                  capture_output=True, text=True)
+          if result.returncode != 0:
+              print(f"Error getting model info: {result.stderr}")
+              sys.exit(1)
+              
+          model_info = json.loads(result.stdout)
+          print(f"Model info: {json.dumps(model_info, indent=2)}")
+          
+          # Extract the model files to the output directory
+          os.makedirs(output_dir, exist_ok=True)
+          
+          # Save model details to a JSON file
+          with open(os.path.join(output_dir, "model_info.json"), "w") as f:
+              json.dump(model_info, f, indent=2)
+          
+          # Create a basic HF-compatible config.json
+          config = {
+              "model_type": "llama" if "llama" in model_name.lower() else "gpt2",
+              "architectures": ["LlamaForCausalLM" if "llama" in model_name.lower() else "GPT2LMHeadModel"],
+              "vocab_size": 32000,
+              "hidden_size": 4096,
+              "intermediate_size": 11008,
+              "num_hidden_layers": 32,
+              "num_attention_heads": 32,
+              "hidden_act": "silu",
+              "max_position_embeddings": 4096,
+              "initializer_range": 0.02,
+              "rms_norm_eps": 1e-6,
+              "use_cache": True,
+              "pad_token_id": 0,
+              "bos_token_id": 1,
+              "eos_token_id": 2,
+              "tie_word_embeddings": False,
+              "transformers_version": "4.28.1"
+          }
+          
+          # Write config.json
+          with open(os.path.join(output_dir, "config.json"), "w") as f:
+              json.dump(config, f, indent=2)
+              
+          # Create a simple tokenizer_config.json
+          tokenizer_config = {
+              "model_max_length": 4096,
+              "padding_side": "right",
+              "bos_token": "<s>",
+              "eos_token": "</s>",
+              "unk_token": "<unk>",
+              "clean_up_tokenization_spaces": True
+          }
+          
+          # Write tokenizer_config.json
+          with open(os.path.join(output_dir, "tokenizer_config.json"), "w") as f:
+              json.dump(tokenizer_config, f, indent=2)
+              
+          print(f"Exported model files to {output_dir}")
+          EOF
+          
+          # Make script executable
+          chmod +x export_model.py
+          
+          # Export the model
+          python export_model.py "${{ github.event.inputs.base_model || 'llama2' }}" "./base-model"
+
+      - name: Upload Base Model to S3
+        env:
+          S3_BUCKET_NAME: "ollama-lora-pipeline"
+        run: |
+          # Create the base-models directory in S3 if it doesn't exist
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/${{ github.event.inputs.base_model || 'llama2' }}/
+          
+          # Upload the base model files to S3
+          aws s3 cp --recursive ./base-model/ s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/
+          
+          echo "Base model uploaded to S3: s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/"
 
       - name: Create Training Scripts
         run: |
           mkdir -p ./scripts/training_scripts/lora_trainer
           
-          # Create a training script that can handle existing JSONL files
+          # Create a training script that uses the uploaded base model
           cat > ./scripts/training_scripts/lora_trainer/train_lora.py << 'EOF'
           #!/usr/bin/env python3
 
@@ -61,6 +250,7 @@ jobs:
           import traceback
           import glob
           import torch
+          import json
 
           logging.basicConfig(
               level=logging.INFO,
@@ -95,24 +285,15 @@ jobs:
                   logger.info(f"Python version: {sys.version}")
                   logger.info(f"PyTorch version: {torch.__version__}")
                   
-                  # Import libraries after logging versions
-                  from transformers import (
-                      AutoModelForCausalLM,
-                      AutoTokenizer,
-                      Trainer,
-                      TrainingArguments,
-                      DataCollatorForLanguageModeling
-                  )
-                  
                   # Parse arguments
                   parser = argparse.ArgumentParser(description="Train a language model")
-                  parser.add_argument("--model_name_or_path", type=str, default="distilgpt2")
+                  parser.add_argument("--model_name_or_path", type=str, default="/opt/ml/input/data/model")
                   parser.add_argument("--output_dir", type=str, default="/opt/ml/model")
                   parser.add_argument("--per_device_train_batch_size", type=int, default=1)
                   parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
                   parser.add_argument("--learning_rate", type=float, default=2e-4)
                   parser.add_argument("--num_train_epochs", type=int, default=1)
-                  parser.add_argument("--use_lora", type=str, default='False')
+                  parser.add_argument("--use_lora", type=str, default='True')
                   parser.add_argument("--lora_r", type=int, default=8)
                   parser.add_argument("--lora_alpha", type=int, default=16)
                   parser.add_argument("--lora_dropout", type=float, default=0.05)
@@ -121,21 +302,125 @@ jobs:
                   
                   # Log all arguments
                   logger.info(f"Arguments: {args}")
+
+                  # Import libraries
+                  from transformers import AutoModelForCausalLM, AutoTokenizer
+                  
+                  # Check if the model path exists and what it contains
+                  model_path = args.model_name_or_path
+                  logger.info(f"Checking model path: {model_path}")
+                  if os.path.exists(model_path):
+                      logger.info(f"Model path exists. Contents: {os.listdir(model_path)}")
+                      
+                      # Check if config.json exists
+                      config_path = os.path.join(model_path, "config.json")
+                      if os.path.exists(config_path):
+                          logger.info(f"config.json exists: {open(config_path).read()[:100]}...")
+                      else:
+                          logger.warning("config.json does not exist!")
+                          
+                          # Create a basic config.json if it doesn't exist
+                          logger.info("Creating a basic config.json file")
+                          config = {
+                              "model_type": "llama",
+                              "architectures": ["LlamaForCausalLM"],
+                              "vocab_size": 32000,
+                              "hidden_size": 4096,
+                              "intermediate_size": 11008,
+                              "num_hidden_layers": 32,
+                              "num_attention_heads": 32,
+                              "hidden_act": "silu",
+                              "max_position_embeddings": 4096,
+                              "initializer_range": 0.02,
+                              "rms_norm_eps": 1e-6,
+                              "use_cache": True,
+                              "pad_token_id": 0,
+                              "bos_token_id": 1,
+                              "eos_token_id": 2,
+                              "tie_word_embeddings": False
+                          }
+                          
+                          with open(config_path, "w") as f:
+                              json.dump(config, f, indent=2)
+                          logger.info("Created config.json")
+                  else:
+                      logger.error(f"Model path {model_path} does not exist!")
+                      sys.exit(1)
                   
                   # Find training files
                   training_files = find_training_files()
                   logger.info(f"Using training files: {training_files}")
                   
-                  # Use the model specified in arguments
-                  model_name = args.model_name_or_path
+                  # Create a simple tokenizer
+                  tokenizer_path = os.path.join(model_path, "tokenizer.json")
+                  if not os.path.exists(tokenizer_path):
+                      logger.info("No tokenizer found, using a default tokenizer")
+                      from transformers import PreTrainedTokenizerFast
+                      
+                      # Use GPT-2 tokenizer as a default
+                      tokenizer = PreTrainedTokenizerFast.from_pretrained("gpt2")
+                      tokenizer.save_pretrained(model_path)
+                      logger.info("Saved default tokenizer")
                   
                   # Load tokenizer
-                  logger.info(f"Loading tokenizer: {model_name}")
-                  tokenizer = AutoTokenizer.from_pretrained(model_name)
+                  logger.info(f"Loading tokenizer from {model_path}")
+                  tokenizer = AutoTokenizer.from_pretrained(model_path)
                   if tokenizer.pad_token is None:
                       tokenizer.pad_token = tokenizer.eos_token
+                      
+                  # Load model in 8-bit to save memory
+                  logger.info(f"Loading model from {model_path} in 8-bit")
+                  try:
+                      model = AutoModelForCausalLM.from_pretrained(
+                          model_path,
+                          load_in_8bit=True,
+                          device_map="auto"
+                      )
+                      logger.info("Model loaded successfully in 8-bit mode")
+                  except Exception as e:
+                      logger.warning(f"Failed to load model in 8-bit mode: {e}")
+                      logger.info("Trying to load model normally")
+                      model = AutoModelForCausalLM.from_pretrained(model_path)
+                      logger.info("Model loaded successfully in normal mode")
                   
-                  # Custom dataset implementation to avoid PyArrow issues
+                  # Apply LoRA if enabled
+                  if args.use_lora.lower() == 'true':
+                      logger.info("Setting up LoRA")
+                      try:
+                          from peft import get_peft_model, LoraConfig, TaskType
+                          
+                          # Determine target modules based on model architecture
+                          target_modules = []
+                          if hasattr(model, "config") and hasattr(model.config, "model_type"):
+                              model_type = model.config.model_type.lower()
+                              if "gpt" in model_type:
+                                  target_modules = ["c_attn"]
+                              elif "llama" in model_type or "mistral" in model_type:
+                                  target_modules = ["q_proj", "v_proj"]
+                              else:
+                                  target_modules = ["query_key_value"]  # Fallback
+                          else:
+                              target_modules = ["query_key_value"]  # Default fallback
+                              
+                          logger.info(f"Using target modules for LoRA: {target_modules}")
+                          
+                          lora_config = LoraConfig(
+                              r=args.lora_r,
+                              lora_alpha=args.lora_alpha,
+                              target_modules=target_modules,
+                              lora_dropout=args.lora_dropout,
+                              bias="none",
+                              task_type=TaskType.CAUSAL_LM
+                          )
+                          
+                          model = get_peft_model(model, lora_config)
+                          logger.info("LoRA applied successfully")
+                      except Exception as e:
+                          logger.error(f"Failed to set up LoRA: {e}")
+                          logger.error(traceback.format_exc())
+                          logger.info("Continuing without LoRA")
+                  
+                  # Custom dataset implementation
                   from torch.utils.data import Dataset
                   
                   class JsonlDataset(Dataset):
@@ -193,10 +478,12 @@ jobs:
                   train_dataset = JsonlDataset(training_files, tokenizer)
                   logger.info(f"Dataset loaded with {len(train_dataset)} examples")
                   
-                  # Load model
-                  logger.info(f"Loading model: {model_name}")
-                  model = AutoModelForCausalLM.from_pretrained(model_name)
-                  logger.info(f"Model loaded successfully")
+                  # Import Trainer components
+                  from transformers import (
+                      TrainingArguments,
+                      Trainer,
+                      DataCollatorForLanguageModeling
+                  )
                   
                   # Set up data collator
                   data_collator = DataCollatorForLanguageModeling(
@@ -204,7 +491,7 @@ jobs:
                       mlm=False
                   )
                   
-                  # Training arguments - simplified
+                  # Training arguments
                   training_args = TrainingArguments(
                       output_dir=args.output_dir,
                       per_device_train_batch_size=args.per_device_train_batch_size,
@@ -232,7 +519,16 @@ jobs:
                   
                   # Save model
                   logger.info(f"Saving model to {args.output_dir}")
-                  model.save_pretrained(args.output_dir)
+                  
+                  # If using LoRA, only save the adapter
+                  if args.use_lora.lower() == 'true' and hasattr(model, "save_pretrained"):
+                      model.save_pretrained(args.output_dir)
+                      logger.info("Saved LoRA adapter")
+                  else:
+                      # Full model save
+                      model.save_pretrained(args.output_dir)
+                      logger.info("Saved full model")
+                      
                   tokenizer.save_pretrained(args.output_dir)
                   logger.info(f"Model saved successfully")
                   
@@ -245,11 +541,13 @@ jobs:
               main()
           EOF
           
-          # Create requirements.txt file with Python 3.11 compatible versions
+          # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
-          transformers==4.36.0
-          torch>=2.0.0
-          accelerate>=0.20.0
+          transformers==4.28.1
+          torch==1.13.1
+          accelerate==0.16.0
+          peft==0.3.0
+          bitsandbytes==0.38.0
           EOF
 
       - name: Create SageMaker Fine-tuning Script
@@ -280,7 +578,7 @@ jobs:
               parser.add_argument(
                   "--base-model",
                   required=True,
-                  help="Base model to fine-tune"
+                  help="Base model path in S3"
               )
               
               parser.add_argument(
@@ -306,7 +604,7 @@ jobs:
           def main():
               args = setup_args()
               try:
-                  logger.info(f"Setting up SageMaker finetuning for {args.base_model}")
+                  logger.info(f"Setting up SageMaker finetuning for model at {args.base_model}")
                   
                   # Set up SageMaker session
                   sagemaker_session = sagemaker.Session()
@@ -315,20 +613,23 @@ jobs:
                   
                   # Define hyperparameters for fine-tuning
                   hyperparameters = {
-                      'model_name_or_path': args.base_model,
+                      'model_name_or_path': '/opt/ml/input/data/model',
                       'output_dir': '/opt/ml/model',
                       'per_device_train_batch_size': 1,
                       'gradient_accumulation_steps': 4,
                       'learning_rate': 2e-4,
                       'num_train_epochs': 1,
-                      'use_lora': 'False'  # Disabled for now
+                      'use_lora': 'True',
+                      'lora_r': 8,
+                      'lora_alpha': 16,
+                      'lora_dropout': 0.05
                   }
                   
                   # Generate a simple job name
                   suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
                   job_name = f"train-{suffix}"
                   
-                  # Use Hugging Face estimator with versions supporting Python 3.11
+                  # Use Hugging Face estimator with compatible versions
                   huggingface_estimator = HuggingFace(
                       entry_point='train_lora.py',
                       source_dir='./scripts/training_scripts/lora_trainer',
@@ -336,14 +637,17 @@ jobs:
                       instance_count=1,
                       role=role,
                       transformers_version='4.28.1',
-                      pytorch_version='2.0.0',
-                      py_version='py310',
+                      pytorch_version='1.13.1',
+                      py_version='py39',
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False
                   )
                   
-                  # Create training job inputs
-                  inputs = {'training': args.training_data}
+                  # Create training job inputs with base model
+                  inputs = {
+                      'training': args.training_data,
+                      'model': args.base_model
+                  }
                   
                   # Start the training job
                   logger.info(f"Starting training job: {job_name}")
@@ -363,22 +667,27 @@ jobs:
           EOF
           chmod +x sagemaker_finetune.py
 
-      - name: Construct S3 URI and Fine-tune Model
+      - name: Construct S3 URIs and Fine-tune Model
         id: finetune
         env:
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
           TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.xlarge' }}
           S3_BUCKET_NAME: "ollama-lora-pipeline"
-          DATASET_BUCKET_NAME: "ollama-lora-pipeline"  # You can change this to your dataset bucket
         run: |
-          # Use the dataset bucket for training data
-          TRAINING_DATA_URI="s3://${DATASET_BUCKET_NAME}/training-data/"
+          # Create all required directories in S3 if they don't exist
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key training-data/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key models/
+          
+          # Define S3 URIs
+          BASE_MODEL_URI="s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/"
+          TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/training-data/"
+          echo "Using base model from: $BASE_MODEL_URI"
           echo "Using training data from: $TRAINING_DATA_URI"
           echo "Using instance type: $TRAINING_INSTANCE_TYPE"
           
           # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
-            --base-model "${{ github.event.inputs.base_model || 'distilgpt2' }}" \
+            --base-model "$BASE_MODEL_URI" \
             --training-data "$TRAINING_DATA_URI" \
             --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "$TRAINING_INSTANCE_TYPE"
@@ -391,26 +700,248 @@ jobs:
         run: |
           python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
 
-      - name: Merge LoRA Weights (if applicable)
+      - name: Merge LoRA Weights
         run: |
-          # For now, this is a simple copy operation since we're not using LoRA
+          # Create a script to merge LoRA weights
+          cat > ./scripts/merge_lora.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import argparse
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          from peft import PeftModel
+          
+          def main():
+              parser = argparse.ArgumentParser(description="Merge LoRA weights with base model")
+              parser.add_argument("--base-model", required=True, help="Path to base model")
+              parser.add_argument("--lora-model", required=True, help="Path to LoRA adapter")
+              parser.add_argument("--output-dir", required=True, help="Output directory for merged model")
+              
+              args = parser.parse_args()
+              
+              print(f"Loading base model from {args.base_model}")
+              base_model = AutoModelForCausalLM.from_pretrained(args.base_model)
+              tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+              
+              print(f"Loading LoRA adapter from {args.lora_model}")
+              model = PeftModel.from_pretrained(base_model, args.lora_model)
+              
+              print("Merging weights...")
+              model = model.merge_and_unload()
+              
+              print(f"Saving merged model to {args.output_dir}")
+              model.save_pretrained(args.output_dir)
+              tokenizer.save_pretrained(args.output_dir)
+              
+              print("Done!")
+              
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          chmod +x ./scripts/merge_lora.py
+          
+          # First we need to download the base model again
+          mkdir -p ./base-model
+          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'llama2' }}/ ./base-model/
+          
+          # Now merge the weights
           mkdir -p ./merged-model
-          cp -r ./fine-tuned-model/* ./merged-model/
-          echo "Copied model (no LoRA merge needed for full fine-tuning)"
+          python ./scripts/merge_lora.py \
+            --base-model ./base-model \
+            --lora-model ./fine-tuned-model \
+            --output-dir ./merged-model
 
       - name: Convert to GGUF Format
         run: |
+          # Install llama-cpp-python for GGUF conversion
+          pip install llama-cpp-python
+          
+          # Create GGUF conversion script
+          cat > ./scripts/convert_to_gguf.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import argparse
+          import subprocess
+          import tempfile
+          import shutil
+          
+          def main():
+              parser = argparse.ArgumentParser(description="Convert model to GGUF format")
+              parser.add_argument("--input-dir", required=True, help="Input model directory")
+              parser.add_argument("--output-file", required=True, help="Output GGUF file")
+              parser.add_argument("--outtype", default="q4_k_m", help="Quantization type")
+              
+              args = parser.parse_args()
+              
+              # Check if input directory exists
+              if not os.path.exists(args.input_dir):
+                  print(f"Error: Input directory {args.input_dir} does not exist")
+                  return 1
+              
+              # Create output directory if it doesn't exist
+              output_dir = os.path.dirname(args.output_file)
+              os.makedirs(output_dir, exist_ok=True)
+              
+              # Clone llama.cpp repository for conversion tools
+              with tempfile.TemporaryDirectory() as tmp_dir:
+                  print("Cloning llama.cpp repository...")
+                  subprocess.run(
+                      ["git", "clone", "https://github.com/ggerganov/llama.cpp", tmp_dir],
+                      check=True
+                  )
+                  
+                  # Build llama.cpp
+                  print("Building llama.cpp...")
+                  subprocess.run(["make"], cwd=tmp_dir, check=True)
+                  
+                  # Convert to GGUF
+                  print(f"Converting model to GGUF format...")
+                  subprocess.run([
+                      os.path.join(tmp_dir, "convert.py"),
+                      "--outtype", args.outtype,
+                      "--outfile", args.output_file,
+                      args.input_dir
+                  ], check=True)
+              
+              print(f"Conversion complete: {args.output_file}")
+              return 0
+              
+          if __name__ == "__main__":
+              exit(main())
+          EOF
+          
+          chmod +x ./scripts/convert_to_gguf.py
+          
+          # Create models directory
           mkdir -p ./models
-          python scripts/convert_to_gguf.py --input-dir ./merged-model --output-file ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf --outtype q4_k_m
+          
+          # Convert to GGUF
+          python ./scripts/convert_to_gguf.py \
+            --input-dir ./merged-model \
+            --output-file ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf \
+            --outtype q4_k_m
 
       - name: Create Ollama Modelfile
         run: |
-          python scripts/create_modelfile.py --gguf-path ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf --model-name ${{ github.event.inputs.model_name || 'gpt2-custom' }}
+          # Create modelfile creation script
+          cat > ./scripts/create_modelfile.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import argparse
+          
+          def main():
+              parser = argparse.ArgumentParser(description="Create Ollama Modelfile")
+              parser.add_argument("--gguf-path", required=True, help="Path to GGUF file")
+              parser.add_argument("--model-name", required=True, help="Model name")
+              
+              args = parser.parse_args()
+              
+              # Get base filename without path
+              gguf_file = os.path.basename(args.gguf_path)
+              
+              # Create Modelfile
+              modelfile_content = f"""FROM {gguf_file}
+
+          PARAMETER stop "."
+          PARAMETER stop ";"
+          PARAMETER stop ","
+          PARAMETER stop "!"
+          PARAMETER stop "?"
+          PARAMETER stop "\n\n"
+          PARAMETER temperature 0.7
+          PARAMETER top_k 40
+          PARAMETER top_p 0.95
+
+          SYSTEM You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.
+
+          If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.
+          """
+              
+              # Write Modelfile
+              with open("Modelfile", "w") as f:
+                  f.write(modelfile_content)
+                  
+              print(f"Created Modelfile for {args.model_name}")
+              
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          chmod +x ./scripts/create_modelfile.py
+          
+          # Create Modelfile
+          python ./scripts/create_modelfile.py \
+            --gguf-path ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf \
+            --model-name ${{ github.event.inputs.model_name || 'gpt2-custom' }}
 
       - name: Evaluate Model
         id: evaluate
         run: |
-          python scripts/evaluate_model.py --model-dir ./merged-model --output-file ./evaluation_results.json
+          # Simple evaluation script
+          cat > ./scripts/evaluate_model.py << 'EOF'
+          #!/usr/bin/env python3
+          import argparse
+          import json
+          import os
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          
+          def evaluate_model(model_dir):
+              # Load the model and tokenizer
+              model = AutoModelForCausalLM.from_pretrained(model_dir)
+              tokenizer = AutoTokenizer.from_pretrained(model_dir)
+              
+              # Sample prompts for evaluation
+              prompts = [
+                  "The capital of France is",
+                  "Machine learning is a subset of",
+                  "The best programming language is"
+              ]
+              
+              results = {}
+              for prompt in prompts:
+                  inputs = tokenizer(prompt, return_tensors="pt")
+                  outputs = model.generate(inputs["input_ids"], max_length=50, num_return_sequences=1)
+                  response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                  results[prompt] = response
+              
+              # Simple metrics
+              metrics = {
+                  "num_prompts": len(prompts),
+                  "avg_response_length": sum(len(r) for r in results.values()) / len(results),
+              }
+              
+              return {
+                  "samples": results,
+                  "metrics": metrics
+              }
+              
+          def main():
+              parser = argparse.ArgumentParser(description="Evaluate fine-tuned model")
+              parser.add_argument("--model-dir", required=True, help="Directory containing the model")
+              parser.add_argument("--output-file", required=True, help="Output file for evaluation results")
+              
+              args = parser.parse_args()
+              
+              print(f"Evaluating model in {args.model_dir}...")
+              results = evaluate_model(args.model_dir)
+              
+              print(f"Writing results to {args.output_file}")
+              with open(args.output_file, "w") as f:
+                  json.dump(results, f, indent=2)
+                  
+              print("Evaluation complete!")
+              
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          chmod +x ./scripts/evaluate_model.py
+          
+          # Run evaluation
+          python ./scripts/evaluate_model.py \
+            --model-dir ./merged-model \
+            --output-file ./evaluation_results.json
+          
           echo "eval_file=evaluation_results.json" >> $GITHUB_OUTPUT
 
       - name: Upload to S3
@@ -445,7 +976,51 @@ jobs:
 
       - name: Generate Report
         run: |
-          python scripts/generate_report.py --eval-file ./evaluation_results.json --output-file ./report.md
+          cat > ./scripts/generate_report.py << 'EOF'
+          #!/usr/bin/env python3
+          import json
+          import argparse
+          
+          def main():
+              parser = argparse.ArgumentParser(description="Generate evaluation report")
+              parser.add_argument("--eval-file", required=True, help="Evaluation results file")
+              parser.add_argument("--output-file", required=True, help="Output report file")
+              
+              args = parser.parse_args()
+              
+              # Load evaluation results
+              with open(args.eval_file, "r") as f:
+                  results = json.load(f)
+              
+              # Generate Markdown report
+              report = "# Model Evaluation Report\n\n"
+              
+              # Add metrics section
+              report += "## Metrics\n\n"
+              for metric, value in results["metrics"].items():
+                  report += f"- **{metric}:** {value}\n"
+              
+              # Add samples section
+              report += "\n## Sample Outputs\n\n"
+              for prompt, response in results["samples"].items():
+                  report += f"**Prompt:** {prompt}\n\n"
+                  report += f"**Response:** {response}\n\n"
+                  report += "---\n\n"
+              
+              # Write report
+              with open(args.output_file, "w") as f:
+                  f.write(report)
+                  
+              print(f"Report written to {args.output_file}")
+              
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          chmod +x ./scripts/generate_report.py
+          
+          # Generate report
+          python ./scripts/generate_report.py --eval-file ./evaluation_results.json --output-file ./report.md
 
       - name: Upload Evaluation Results
         uses: actions/upload-artifact@v4
