@@ -98,7 +98,7 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         instance_count=1,
         role=role,
         transformers_version="4.49",
-        pytorch_version="2.0",
+        pytorch_version="2.5.1",
         py_version="py310",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
