@@ -255,11 +255,11 @@ jobs:
               main()
           EOF
           
-          # Create requirements.txt file
+          # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
           transformers>=4.26.0
           datasets>=2.9.0
-          torch>=2.0.0
+          torch==1.13.1
           peft>=0.3.0
           scipy
           scikit-learn
@@ -348,6 +348,7 @@ jobs:
                   job_name = f"train-{suffix}"
                   
                   # Use Hugging Face estimator with LoRA capabilities
+                  # Using PyTorch 1.13.1 which is supported by SageMaker
                   huggingface_estimator = HuggingFace(
                       entry_point='train_lora.py',
                       source_dir='./scripts/training_scripts/lora_trainer',
@@ -355,8 +356,8 @@ jobs:
                       instance_count=1,
                       role=role,
                       transformers_version='4.26.0',
-                      pytorch_version='2.0.0',
-                      py_version='py310',
+                      pytorch_version='1.13.1',  # Changed from 2.0.0 to 1.13.1
+                      py_version='py39',         # Changed from py310 to py39 for compatibility
                       hyperparameters=hyperparameters
                   )
                   

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import os
-import time
-import random
-import string
 import argparse
 import logging
 import boto3
 import sagemaker
+import time
+import string
+import random
 from sagemaker.huggingface import HuggingFace
 
 # Configure logging
@@ -23,13 +23,13 @@ def setup_args():
     parser.add_argument(
         "--base-model",
         required=True,
-        help="Base model to fine-tune (e.g., mistralai/Mistral-7B-v0-1)"
+        help="Base model to fine-tune"
     )
     
     parser.add_argument(
         "--training-data",
         required=True,
-        help="S3 URI of training data (e.g., s3://bucket/data/)"
+        help="S3 URI of training data"
     )
     
     parser.add_argument(
@@ -40,184 +40,69 @@ def setup_args():
     
     parser.add_argument(
         "--instance-type",
-        default=os.environ.get("TRAINING_INSTANCE_TYPE", "ml.g4dn.xlarge"),
+        default="ml.g4dn.xlarge",
         help="SageMaker training instance type"
     )
     
-    parser.add_argument(
-        "--max-runtime",
-        type=int,
-        default=86400,  # 24 hours
-        help="Maximum runtime in seconds"
-    )
-    
-    args = parser.parse_args()
-    
-    # Log the arguments
-    logger.info(f"Base model: {args.base_model}")
-    logger.info(f"Training data: {args.training_data}")
-    logger.info(f"Output bucket: {args.output_bucket}")
-    logger.info(f"Instance type: {args.instance_type}")
-    
-    return args
-
-def finetune_model(base_model, training_data, output_bucket, instance_type, max_runtime=86400):
-    """Fine-tune a model using SageMaker."""
-    logger.info(f"Setting up SageMaker finetuning for {base_model}")
-    
-    # Get the AWS account ID
-    account_id = boto3.client('sts').get_caller_identity().get('Account')
-    logger.info(f"AWS Account ID: {account_id}")
-    
-    # Set up SageMaker session
-    sagemaker_session = sagemaker.Session(default_bucket=output_bucket)
-    logger.info(f"SageMaker session created successfully with bucket: {output_bucket}")
-    
-    # Get the execution role from environment or use default
-    role = os.environ.get("SAGEMAKER_ROLE_ARN")
-    logger.info(f"Using SageMaker execution role: {role}")
-    
-    # Configure hyperparameters - use 4-bit quantization to reduce memory usage
-    hyperparameters = {
-        "model_name_or_path": base_model,
-        "output_dir": "/opt/ml/model",
-        "use_4bit": True,
-        "bnb_4bit_compute_dtype": "float16",
-        "bnb_4bit_quant_type": "nf4",
-        "use_nested_quant": True,
-        "num_train_epochs": 3,
-        "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": 4,
-        "learning_rate": 2e-5,
-        "fp16": True,
-        "save_strategy": "steps",
-        "save_steps": 500,
-        "optim": "paged_adamw_8bit",
-    }
-    
-    # Verify training data exists
-    try:
-        s3_client = boto3.client('s3')
-        bucket_name = training_data.replace('s3://', '').split('/')[0]
-        prefix = '/'.join(training_data.replace('s3://', '').split('/')[1:])
-        if not prefix.endswith('/'):
-            prefix = prefix + '/'
-        
-        logger.info(f"Looking for training data in bucket: {bucket_name}, prefix: {prefix}")
-        
-        response = s3_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix=prefix
-        )
-        
-        if 'Contents' not in response or len(response['Contents']) == 0:
-            logger.error(f"No files found at {training_data}")
-            raise ValueError(f"No training data files found at {training_data}")
-            
-        found_jsonl_files = False
-        for item in response['Contents']:
-            if item['Key'].endswith('.jsonl') or item['Key'].endswith('.json'):
-                found_jsonl_files = True
-                break
-                
-        if not found_jsonl_files:
-            logger.error(f"No JSON/JSONL files found at {training_data}")
-            raise ValueError(f"No JSON/JSONL files found at {training_data}")
-            
-        logger.info(f"Found {len(response['Contents'])} files at {training_data}")
-        for item in response['Contents'][:5]:  # Log first 5 files
-            logger.info(f"- {item['Key']}")
-    
-    except Exception as e:
-        logger.error(f"Error checking training data: {str(e)}")
-        raise
-    
-    # Set up the Hugging Face estimator
-    huggingface_estimator = HuggingFace(
-        entry_point="run_qlora_simple.py",  # Using a simplified script
-        source_dir="./scripts/training_scripts",
-        instance_type=instance_type,
-        instance_count=1,
-        role=role,
-        transformers_version="4.28.1",  # Using an older, stable version
-        pytorch_version="2.0.0",        # Using a compatible PyTorch version
-        py_version="py310",
-        hyperparameters=hyperparameters,
-        max_run=max_runtime,
-        environment={
-            "TRANSFORMERS_CACHE": "/tmp/transformers_cache",
-            "DISABLE_TELEMETRY": "true"
-        },
-        debugger_hook_config=False
-    )
-    logger.info("HuggingFace estimator created successfully")
-    
-    # Create training job inputs
-    inputs = {"training": training_data}
-    
-    # Start the training job
-    try:
-        # Generate a valid, compliant job name
-        timestamp = int(time.time())
-        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        
-        # Extract just the model name without organization
-        model_name = base_model.split('/')[-1] if '/' in base_model else base_model
-        
-        # Clean the model name to only include allowed characters and limit length
-        model_part = ''.join(c if c.isalnum() else '-' for c in model_name)
-        model_part = model_part[:20]  # Limit to 20 chars to ensure total length is within 63
-        
-        # Ensure no consecutive hyphens and no leading/trailing hyphens
-        model_part = model_part.strip('-')
-        while '--' in model_part:
-            model_part = model_part.replace('--', '-')
-            
-        # Create the job name with timestamp and random suffix
-        job_name = f"{model_part}-{timestamp}-{random_suffix}"
-        
-        logger.info(f"Creating training-job with name: {job_name}")
-        huggingface_estimator.fit(inputs=inputs, job_name=job_name)
-        logger.info(f"Training job {job_name} started successfully")
-        
-        try:
-            # Wait for job to complete
-            huggingface_estimator.wait(logs="All")
-            logger.info(f"Training job {job_name} completed")
-            
-            # Get model artifacts
-            model_artifacts = huggingface_estimator.model_data
-            logger.info(f"Model artifacts stored at: {model_artifacts}")
-            return model_artifacts, job_name
-        
-        except Exception as e:
-            logger.warning(f"Error waiting for job or accessing logs: {str(e)}")
-            logger.info(f"Training job {job_name} is running in the background")
-            logger.info(f"Check AWS SageMaker console for status and logs")
-            return None, job_name
-            
-    except Exception as e:
-        logger.error(f"Error starting training job: {str(e)}")
-        raise e
+    return parser.parse_args()
 
 def main():
     args = setup_args()
     try:
-        model_artifacts, job_name = finetune_model(
-            args.base_model, 
-            args.training_data, 
-            args.output_bucket, 
-            args.instance_type,
-            args.max_runtime
+        logger.info(f"Setting up SageMaker finetuning for {args.base_model}")
+        
+        # Set up SageMaker session
+        sagemaker_session = sagemaker.Session()
+        role = os.environ.get("SAGEMAKER_ROLE_ARN")
+        logger.info(f"Using role: {role}")
+        
+        # Define hyperparameters for LoRA fine-tuning
+        hyperparameters = {
+            'model_name_or_path': args.base_model,
+            'output_dir': '/opt/ml/model',
+            'per_device_train_batch_size': 2,
+            'gradient_accumulation_steps': 1,
+            'learning_rate': 2e-4,
+            'num_train_epochs': 1,
+            
+            # LoRA specific parameters
+            'use_lora': 'True',
+            'lora_r': 8,
+            'lora_alpha': 16,
+            'lora_dropout': 0.05
+        }
+        
+        # Generate a simple job name
+        timestamp = int(time.time())
+        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+        job_name = f"train-{suffix}"
+        
+        # Use Hugging Face estimator with LoRA capabilities
+        # Using PyTorch 1.13.1 which is supported by SageMaker
+        huggingface_estimator = HuggingFace(
+            entry_point='train_lora.py',
+            source_dir='./scripts/training_scripts/lora_trainer',
+            instance_type=args.instance_type,
+            instance_count=1,
+            role=role,
+            transformers_version='4.26.0',
+            pytorch_version='1.13.1',  # Changed from 2.0.0 to 1.13.1
+            py_version='py39',         # Changed from py310 to py39 for compatibility
+            hyperparameters=hyperparameters
         )
         
-        if model_artifacts:
-            logger.info(f"Training completed successfully")
-            logger.info(f"Model artifacts: {model_artifacts}")
-        else:
-            logger.info(f"Training job {job_name} started but couldn't monitor progress")
-            logger.info("Please check the AWS SageMaker console for the job status")
-            
+        # Create training job inputs
+        inputs = {'training': args.training_data}
+        
+        # Start the training job
+        logger.info(f"Starting training job: {job_name}")
+        huggingface_estimator.fit(inputs=inputs, job_name=job_name)
+        logger.info(f"Training job {job_name} completed")
+        
+        # Get the model artifacts
+        model_data = huggingface_estimator.model_data
+        logger.info(f"Model artifacts: {model_data}")
+        
     except Exception as e:
         logger.error(f"Error during fine-tuning: {str(e)}")
         exit(1)
