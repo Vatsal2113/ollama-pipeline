@@ -132,14 +132,16 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         logger.error(f"Error checking training data: {str(e)}")
         raise
     
-    # Set up the Hugging Face estimator with a properly configured image
+    # Set up the Hugging Face estimator with explicit transformers version
     huggingface_estimator = HuggingFace(
-        entry_point="run_qlora.py",  # Use QLoRA script from the container
+        entry_point="run_qlora.py",
         source_dir="./scripts/training_scripts",
         instance_type=instance_type,
         instance_count=1,
         role=role,
-        py_version="py311",  # Added this required parameter
+        transformers_version="4.49.0",  # Using full version number
+        pytorch_version="2.5.1",        # Using full version number
+        py_version="py311",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
         environment={
