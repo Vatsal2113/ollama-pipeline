@@ -46,11 +46,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install boto3 sagemaker huggingface-hub datasets torch peft
 
-      - name: Create LoRA Training Scripts
+      - name: Create Training Scripts
         run: |
           mkdir -p ./scripts/training_scripts/lora_trainer
           
-          # Create a simple LoRA training script
+          # Create a simple training script
           cat > ./scripts/training_scripts/lora_trainer/train_lora.py << 'EOF'
           #!/usr/bin/env python3
 
@@ -99,21 +99,16 @@ jobs:
                       TrainingArguments,
                       DataCollatorForLanguageModeling
                   )
-                  from peft import (
-                      get_peft_model,
-                      LoraConfig,
-                      TaskType
-                  )
                   
                   # Parse arguments
-                  parser = argparse.ArgumentParser(description="Train a language model with LoRA")
+                  parser = argparse.ArgumentParser(description="Train a language model")
                   parser.add_argument("--model_name_or_path", type=str, default="distilgpt2")
                   parser.add_argument("--output_dir", type=str, default="/opt/ml/model")
                   parser.add_argument("--per_device_train_batch_size", type=int, default=1)
                   parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
                   parser.add_argument("--learning_rate", type=float, default=2e-4)
                   parser.add_argument("--num_train_epochs", type=int, default=1)
-                  parser.add_argument("--use_lora", type=str, default='True')
+                  parser.add_argument("--use_lora", type=str, default='False')  # Disabled for now
                   parser.add_argument("--lora_r", type=int, default=8)
                   parser.add_argument("--lora_alpha", type=int, default=16)
                   parser.add_argument("--lora_dropout", type=float, default=0.05)
@@ -131,7 +126,7 @@ jobs:
                   dataset = load_dataset("json", data_files=training_files, split="train")
                   logger.info(f"Loaded dataset with {len(dataset)} examples")
                   
-                  # Use a smaller model - distilgpt2 is only 82M parameters
+                  # Use the model specified in arguments
                   model_name = args.model_name_or_path
                   
                   # Load tokenizer
@@ -159,25 +154,41 @@ jobs:
                   model = AutoModelForCausalLM.from_pretrained(model_name)
                   logger.info(f"Model loaded successfully")
                   
-                  # Set up LoRA if enabled
+                  # LoRA setup is commented out for now
+                  # To enable LoRA in the future, uncomment this block and ensure you have compatible versions
+                  """
                   if args.use_lora.lower() == 'true':
                       logger.info("Setting up LoRA")
-                      
-                      # Simple target modules for distilgpt2
-                      target_modules = ["c_attn"]
-                      
-                      logger.info(f"Using target modules for LoRA: {target_modules}")
-                      
-                      lora_config = LoraConfig(
-                          r=args.lora_r,
-                          lora_alpha=args.lora_alpha,
-                          target_modules=target_modules,
-                          lora_dropout=args.lora_dropout,
-                          bias="none",
-                          task_type=TaskType.CAUSAL_LM
-                      )
-                      
-                      model = get_peft_model(model, lora_config)
+                      try:
+                          from peft import get_peft_model, LoraConfig, TaskType
+                          
+                          # Determine target modules based on model architecture
+                          target_modules = []
+                          if "gpt" in model_name.lower():
+                              target_modules = ["c_attn"]
+                          elif "llama" in model_name.lower() or "mistral" in model_name.lower():
+                              target_modules = ["q_proj", "v_proj"]
+                          else:
+                              target_modules = ["query_key_value"]  # Fallback
+                              
+                          logger.info(f"Using target modules for LoRA: {target_modules}")
+                          
+                          lora_config = LoraConfig(
+                              r=args.lora_r,
+                              lora_alpha=args.lora_alpha,
+                              target_modules=target_modules,
+                              lora_dropout=args.lora_dropout,
+                              bias="none",
+                              task_type=TaskType.CAUSAL_LM
+                          )
+                          
+                          model = get_peft_model(model, lora_config)
+                          logger.info("LoRA applied successfully")
+                      except Exception as e:
+                          logger.error(f"Failed to set up LoRA: {e}")
+                          logger.error(traceback.format_exc())
+                          logger.info("Continuing without LoRA")
+                  """
                   
                   # Set up data collator
                   data_collator = DataCollatorForLanguageModeling(
@@ -228,10 +239,11 @@ jobs:
           
           # Create a minimal requirements.txt file
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
-          transformers
-          datasets
-          torch
-          peft
+          transformers==4.26.1
+          datasets==2.9.0
+          torch==1.13.1
+          # peft==0.3.0  # Uncomment for LoRA in the future
+          accelerate==0.16.0
           EOF
 
       - name: Create SageMaker Fine-tuning Script
@@ -295,34 +307,31 @@ jobs:
                   role = os.environ.get("SAGEMAKER_ROLE_ARN")
                   logger.info(f"Using role: {role}")
                   
-                  # Define hyperparameters for LoRA fine-tuning - using distilgpt2
+                  # Define hyperparameters for fine-tuning
                   hyperparameters = {
-                      'model_name_or_path': "distilgpt2",  # Override with a smaller model
+                      'model_name_or_path': args.base_model,
                       'output_dir': '/opt/ml/model',
                       'per_device_train_batch_size': 1,
                       'gradient_accumulation_steps': 4,
                       'learning_rate': 2e-4,
                       'num_train_epochs': 1,
-                      'use_lora': 'True',
-                      'lora_r': 8,
-                      'lora_alpha': 16,
-                      'lora_dropout': 0.05
+                      'use_lora': 'False'  # Disabled for now, enable in the future for large models
                   }
                   
                   # Generate a simple job name
                   suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
                   job_name = f"train-{suffix}"
                   
-                  # Use Hugging Face estimator with more recent versions
+                  # Use Hugging Face estimator with stable versions
                   huggingface_estimator = HuggingFace(
                       entry_point='train_lora.py',
                       source_dir='./scripts/training_scripts/lora_trainer',
                       instance_type=args.instance_type,
                       instance_count=1,
                       role=role,
-                      transformers_version='4.28.1',  # More recent version that might be pre-installed
-                      pytorch_version='2.0.0',        # More recent version that might be pre-installed  
-                      py_version='py310',             # More recent Python version
+                      transformers_version='4.26.1',
+                      pytorch_version='1.13.1',
+                      py_version='py39',
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False
                   )
@@ -354,15 +363,16 @@ jobs:
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
           TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.xlarge' }}
           S3_BUCKET_NAME: "ollama-lora-pipeline"
+          DATASET_BUCKET_NAME: "ollama-lora-pipeline"  # You can change this to your dataset bucket
         run: |
-          # Use the exact path to the training data folder, not a specific file
-          TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/training-data/"
+          # Use the dataset bucket for training data
+          TRAINING_DATA_URI="s3://${DATASET_BUCKET_NAME}/training-data/"
           echo "Using training data from: $TRAINING_DATA_URI"
           echo "Using instance type: $TRAINING_INSTANCE_TYPE"
           
           # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
-            --base-model "distilgpt2" \
+            --base-model "${{ github.event.inputs.base_model || 'distilgpt2' }}" \
             --training-data "$TRAINING_DATA_URI" \
             --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "$TRAINING_INSTANCE_TYPE"
@@ -375,9 +385,16 @@ jobs:
         run: |
           python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
 
-      - name: Merge LoRA Weights
+      - name: Merge LoRA Weights (if applicable)
         run: |
-          python scripts/merge_lora.py --base-model "distilgpt2" --lora-model ./fine-tuned-model --output-dir ./merged-model
+          # For now, this is a simple copy operation since we're not using LoRA
+          # In the future, when LoRA is enabled, replace with actual merge script
+          mkdir -p ./merged-model
+          cp -r ./fine-tuned-model/* ./merged-model/
+          echo "Copied model (no LoRA merge needed for full fine-tuning)"
+          
+          # Future LoRA merge command (commented)
+          # python scripts/merge_lora.py --base-model "${{ github.event.inputs.base_model }}" --lora-model ./fine-tuned-model --output-dir ./merged-model
 
       - name: Convert to GGUF Format
         run: |
