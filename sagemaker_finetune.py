@@ -78,8 +78,8 @@ def main():
             instance_type=args.instance_type,
             instance_count=1,
             role=role,
-            transformers_version='4.36.0',  # Compatible with Python 3.11
-            pytorch_version='2.0.0',        # Compatible with Python 3.11
+            transformers_version='4.49.0',  # Compatible with Python 3.11
+            pytorch_version='2.5.1',        # Compatible with Python 3.11
             py_version='py311',             # Using Python 3.11 as requested
             hyperparameters=hyperparameters,
             debugger_hook_config=False
