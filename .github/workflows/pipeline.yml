@@ -54,10 +54,11 @@ jobs:
         run: |
           mkdir -p ./scripts/training_scripts
           
-          # Create train.py script
+          # Create train.py script with fixes for command line arguments
           cat > ./scripts/training_scripts/train.py << 'EOF'
           #!/usr/bin/env python3
           import os
+          import argparse
           import torch
           from transformers import (
               AutoModelForCausalLM,
@@ -69,16 +70,40 @@ jobs:
           from datasets import load_dataset
           from peft import LoraConfig, get_peft_model
           
+          def parse_args():
+              """Parse command line arguments passed by SageMaker."""
+              parser = argparse.ArgumentParser(description="Fine-tune a model with LoRA")
+              parser.add_argument("--model_name_or_path", type=str, help="Base model to fine-tune")
+              parser.add_argument("--output_dir", type=str, help="Output directory")
+              parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+              parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+              parser.add_argument("--learning_rate", type=float, default=2e-5)
+              parser.add_argument("--num_train_epochs", type=int, default=3)
+              parser.add_argument("--fp16", type=str, default="True")
+              parser.add_argument("--save_strategy", type=str, default="steps")
+              parser.add_argument("--save_steps", type=int, default=500)
+              return parser.parse_args()
+          
           def main():
-              # Get hyperparameters from environment variables
-              model_id = os.environ["model_name_or_path"]
+              # Parse command line arguments
+              args = parse_args()
               
-              # Load dataset
-              train_dataset = load_dataset("json", data_files=os.environ["SM_CHANNEL_TRAINING"], split="train")
+              print(f"Using model: {args.model_name_or_path}")
+              
+              # Check if running in SageMaker
+              training_dir = os.environ.get("SM_CHANNEL_TRAINING")
+              if training_dir:
+                  print(f"Loading data from SageMaker path: {training_dir}")
+                  train_dataset = load_dataset("json", data_files=training_dir, split="train")
+              else:
+                  raise ValueError("Training data directory not found in SM_CHANNEL_TRAINING")
               
               # Load model and tokenizer
-              model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16)
-              tokenizer = AutoTokenizer.from_pretrained(model_id)
+              model = AutoModelForCausalLM.from_pretrained(
+                  args.model_name_or_path, 
+                  torch_dtype=torch.bfloat16
+              )
+              tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
               
               # Apply LoRA configuration
               lora_config = LoraConfig(
@@ -92,16 +117,19 @@ jobs:
               model = get_peft_model(model, lora_config)
               model.print_trainable_parameters()
               
+              # Convert fp16 string argument to boolean
+              fp16_value = args.fp16.lower() == "true"
+              
               # Training arguments
               training_args = TrainingArguments(
-                  output_dir=os.environ["output_dir"],
-                  per_device_train_batch_size=int(os.environ.get("per_device_train_batch_size", 1)),
-                  gradient_accumulation_steps=int(os.environ.get("gradient_accumulation_steps", 4)),
-                  learning_rate=float(os.environ.get("learning_rate", 2e-5)),
-                  num_train_epochs=int(os.environ.get("num_train_epochs", 3)),
-                  fp16=os.environ.get("fp16", "True").lower() == "true",
-                  save_strategy=os.environ.get("save_strategy", "steps"),
-                  save_steps=int(os.environ.get("save_steps", 500)),
+                  output_dir=args.output_dir,
+                  per_device_train_batch_size=args.per_device_train_batch_size,
+                  gradient_accumulation_steps=args.gradient_accumulation_steps,
+                  learning_rate=args.learning_rate,
+                  num_train_epochs=args.num_train_epochs,
+                  fp16=fp16_value,
+                  save_strategy=args.save_strategy,
+                  save_steps=args.save_steps,
               )
               
               # Initialize trainer
@@ -116,8 +144,9 @@ jobs:
               trainer.train()
               
               # Save trained model and tokenizer
-              model.save_pretrained(os.environ["output_dir"])
-              tokenizer.save_pretrained(os.environ["output_dir"])
+              model.save_pretrained(args.output_dir)
+              tokenizer.save_pretrained(args.output_dir)
+              print(f"Model saved to {args.output_dir}")
           
           if __name__ == "__main__":
               main()
