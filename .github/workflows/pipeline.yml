@@ -49,10 +49,11 @@ jobs:
       - name: Fine-tune Model with SageMaker
         id: finetune
         run: |
+          # Properly quoted arguments to ensure values are passed correctly
           python sagemaker_finetune.py \
-            --base-model ${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }} \
-            --training-data ${{ github.event.inputs.training_data || 'data/train.jsonl' }} \
-            --output-bucket ${{ secrets.S3_BUCKET_NAME }}
+            --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }}" \
+            --training-data "${{ github.event.inputs.training_data || 'data/train.jsonl' }}" \
+            --output-bucket "${{ secrets.S3_BUCKET_NAME }}"
           
           # Get the training job name
           JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text)
@@ -64,10 +65,11 @@ jobs:
 
       - name: Merge LoRA Weights
         run: |
-          python scripts/merge_lora.py --base-model ${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }} --lora-model ./fine-tuned-model --output-dir ./merged-model
+          python scripts/merge_lora.py --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }}" --lora-model ./fine-tuned-model --output-dir ./merged-model
 
       - name: Convert to GGUF Format
         run: |
+          mkdir -p ./models
           python scripts/convert_to_gguf.py --input-dir ./merged-model --output-file ./models/${{ github.event.inputs.model_name || 'mistral-custom' }}.gguf --outtype q4_k_m
 
       - name: Create Ollama Modelfile
@@ -87,6 +89,10 @@ jobs:
           
           # Create timestamp for versioning
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          
+          # Create directories in S3 if they don't exist
+          aws s3api put-object --bucket $BUCKET_NAME --key models/${MODEL_NAME}/${TIMESTAMP}/
+          aws s3api put-object --bucket $BUCKET_NAME --key models/${MODEL_NAME}/latest/
           
           # Upload GGUF model
           aws s3 cp ./models/${MODEL_NAME}.gguf s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/${MODEL_NAME}.gguf
