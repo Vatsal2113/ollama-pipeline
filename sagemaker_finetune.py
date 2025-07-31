@@ -60,8 +60,8 @@ def main():
         hyperparameters = {
             'model_name_or_path': args.base_model,
             'output_dir': '/opt/ml/model',
-            'per_device_train_batch_size': 2,
-            'gradient_accumulation_steps': 1,
+            'per_device_train_batch_size': 1,  # Reduced batch size
+            'gradient_accumulation_steps': 4,  # Increased gradient accumulation
             'learning_rate': 2e-4,
             'num_train_epochs': 1,
             
@@ -77,17 +77,18 @@ def main():
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         job_name = f"train-{suffix}"
         
-        # Use Hugging Face estimator with the latest versions as requested
+        # Use Hugging Face estimator with well-tested stable versions
         huggingface_estimator = HuggingFace(
             entry_point='train_lora.py',
             source_dir='./scripts/training_scripts/lora_trainer',
             instance_type=args.instance_type,
             instance_count=1,
             role=role,
-            transformers_version='4.49.0',  # As requested
-            pytorch_version='2.5.1',        # As requested
-            py_version='py311',             # Python 3.11 as requested
-            hyperparameters=hyperparameters
+            transformers_version='4.26.0',  # More stable version
+            pytorch_version='1.13.1',       # Known to work well with SageMaker
+            py_version='py39',              # Compatible Python version
+            hyperparameters=hyperparameters,
+            debugger_hook_config=False      # Disable SageMaker debugger
         )
         
         # Create training job inputs

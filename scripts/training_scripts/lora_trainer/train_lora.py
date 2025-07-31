@@ -4,22 +4,9 @@ import os
 import argparse
 import logging
 import sys
+import traceback
 import torch
 from datasets import load_dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-    DataCollatorForLanguageModeling
-)
-from peft import (
-    get_peft_model,
-    LoraConfig,
-    TaskType,
-    PeftConfig,
-    PeftModel
-)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,14 +50,49 @@ def find_training_files():
 
 def main():
     try:
-        # Print version info first to help debug
+        # Print environment information first
         logger.info(f"Python version: {sys.version}")
         logger.info(f"PyTorch version: {torch.__version__}")
-        import transformers
-        logger.info(f"Transformers version: {transformers.__version__}")
-        import peft
-        logger.info(f"PEFT version: {peft.__version__}")
+        logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            logger.info(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9} GB")
         
+        # Import libraries after logging versions
+        try:
+            import transformers
+            logger.info(f"Transformers version: {transformers.__version__}")
+            from transformers import (
+                AutoModelForCausalLM,
+                AutoTokenizer,
+                Trainer,
+                TrainingArguments,
+                DataCollatorForLanguageModeling
+            )
+        except ImportError as e:
+            logger.error(f"Failed to import transformers: {e}")
+            raise
+            
+        try:
+            import peft
+            logger.info(f"PEFT version: {peft.__version__}")
+            from peft import (
+                get_peft_model,
+                LoraConfig,
+                TaskType
+            )
+        except ImportError as e:
+            logger.error(f"Failed to import peft: {e}")
+            raise
+            
+        try:
+            import bitsandbytes as bnb
+            logger.info(f"BitsAndBytes version: {bnb.__version__}")
+        except ImportError:
+            logger.warning("BitsAndBytes not available, will not use 8-bit optimization")
+            bnb = None
+        
+        # Parse arguments
         parser = argparse.ArgumentParser(description="Train a language model with LoRA")
         
         # Required parameters from SageMaker
@@ -91,68 +113,99 @@ def main():
         
         args = parser.parse_args()
         
+        # Log all arguments
+        logger.info(f"Arguments: {args}")
         logger.info(f"Training model: {args.model_name_or_path}")
-        logger.info(f"CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
         
         # Find training files
         training_files = find_training_files()
         logger.info(f"Using training files: {training_files}")
         
         # Load dataset
-        dataset = load_dataset("json", data_files=training_files, split="train")
-        logger.info(f"Loaded dataset with {len(dataset)} examples")
-        logger.info(f"Sample: {dataset[0] if len(dataset) > 0 else 'No data'}")
+        try:
+            dataset = load_dataset("json", data_files=training_files, split="train")
+            logger.info(f"Loaded dataset with {len(dataset)} examples")
+            if len(dataset) > 0:
+                logger.info(f"Sample: {dataset[0]}")
+        except Exception as e:
+            logger.error(f"Error loading dataset: {e}")
+            raise
         
         # Load tokenizer
-        logger.info(f"Loading tokenizer: {args.model_name_or_path}")
-        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        try:
+            logger.info(f"Loading tokenizer: {args.model_name_or_path}")
+            tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                logger.info("Set pad_token to eos_token")
+        except Exception as e:
+            logger.error(f"Error loading tokenizer: {e}")
+            raise
         
         # Tokenize function
         def tokenize(examples):
-            return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=128)
+            return tokenizer(
+                examples["text"], 
+                truncation=True, 
+                padding="max_length", 
+                max_length=128
+            )
         
         # Process dataset
-        logger.info("Tokenizing dataset...")
-        tokenized_dataset = dataset.map(tokenize, batched=True)
-        logger.info(f"Dataset tokenized")
+        try:
+            logger.info("Tokenizing dataset...")
+            tokenized_dataset = dataset.map(tokenize, batched=True)
+            logger.info(f"Dataset tokenized successfully")
+        except Exception as e:
+            logger.error(f"Error tokenizing dataset: {e}")
+            raise
         
-        # Load model
-        logger.info(f"Loading model: {args.model_name_or_path}")
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path, 
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None
-        )
-        logger.info(f"Model loaded successfully")
+        # Load model - Use 8-bit quantization to reduce memory footprint
+        try:
+            logger.info(f"Loading model: {args.model_name_or_path}")
+            
+            # Check if bitsandbytes is available
+            load_in_8bit = False
+            if bnb is not None:
+                load_in_8bit = True
+                logger.info("Using 8-bit quantization")
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_name_or_path,
+                load_in_8bit=load_in_8bit,
+                device_map="auto" if torch.cuda.is_available() else None
+            )
+            logger.info(f"Model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading model: {e}")
+            logger.error(traceback.format_exc())
+            raise
         
         # Set up LoRA if enabled
         if args.use_lora.lower() == 'true':
-            logger.info("Setting up LoRA")
-            # Get model architecture to configure proper target modules
-            target_modules = []
-            if "llama" in args.model_name_or_path.lower() or "mistral" in args.model_name_or_path.lower() or "tinyllama" in args.model_name_or_path.lower():
-                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-            else:
-                # Generic fallback
-                target_modules = ["query_key_value"]
+            try:
+                logger.info("Setting up LoRA")
                 
-            logger.info(f"Using target modules for LoRA: {target_modules}")
-            
-            lora_config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=target_modules,
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type=TaskType.CAUSAL_LM
-            )
-            
-            model = get_peft_model(model, lora_config)
-            model.print_trainable_parameters()
+                # Simple target modules that work well for most models
+                target_modules = ["q_proj", "v_proj"]
+                
+                logger.info(f"Using target modules for LoRA: {target_modules}")
+                
+                lora_config = LoraConfig(
+                    r=args.lora_r,
+                    lora_alpha=args.lora_alpha,
+                    target_modules=target_modules,
+                    lora_dropout=args.lora_dropout,
+                    bias="none",
+                    task_type=TaskType.CAUSAL_LM
+                )
+                
+                model = get_peft_model(model, lora_config)
+                logger.info("LoRA applied to model successfully")
+            except Exception as e:
+                logger.error(f"Error setting up LoRA: {e}")
+                logger.error(traceback.format_exc())
+                raise
         
         # Set up data collator
         data_collator = DataCollatorForLanguageModeling(
@@ -161,40 +214,57 @@ def main():
         )
         
         # Training arguments
-        training_args = TrainingArguments(
-            output_dir=args.output_dir,
-            per_device_train_batch_size=args.per_device_train_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            learning_rate=args.learning_rate,
-            num_train_epochs=args.num_train_epochs,
-            save_strategy="epoch",
-            bf16=torch.cuda.is_available(),  # Use bfloat16 if available
-            logging_steps=10,
-            remove_unused_columns=False
-        )
+        try:
+            training_args = TrainingArguments(
+                output_dir=args.output_dir,
+                per_device_train_batch_size=args.per_device_train_batch_size,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                learning_rate=args.learning_rate,
+                num_train_epochs=args.num_train_epochs,
+                save_strategy="epoch",
+                logging_steps=10,
+                remove_unused_columns=False
+            )
+        except Exception as e:
+            logger.error(f"Error setting up training arguments: {e}")
+            raise
         
         # Initialize trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_dataset,
-            data_collator=data_collator,
-            tokenizer=tokenizer
-        )
+        try:
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_dataset,
+                data_collator=data_collator,
+                tokenizer=tokenizer
+            )
+        except Exception as e:
+            logger.error(f"Error initializing trainer: {e}")
+            raise
         
         # Train model
-        logger.info("Starting training...")
-        trainer.train()
+        try:
+            logger.info("Starting training...")
+            trainer.train()
+            logger.info("Training completed successfully!")
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            logger.error(traceback.format_exc())
+            raise
         
         # Save model
-        logger.info(f"Saving model to {args.output_dir}")
-        model.save_pretrained(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
-        
-        logger.info("Training completed successfully!")
+        try:
+            logger.info(f"Saving model to {args.output_dir}")
+            model.save_pretrained(args.output_dir)
+            tokenizer.save_pretrained(args.output_dir)
+            logger.info(f"Model saved successfully")
+        except Exception as e:
+            logger.error(f"Error saving model: {e}")
+            raise
         
     except Exception as e:
-        logger.error(f"Error: {str(e)}", exc_info=True)
+        logger.error(f"Unhandled error: {str(e)}")
+        logger.error(traceback.format_exc())
         sys.exit(1)
 
 if __name__ == "__main__":
