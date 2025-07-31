@@ -28,7 +28,7 @@ def setup_args():
     parser.add_argument('--output-bucket', type=str, required=True,
                         help='S3 bucket for output artifacts')
     
-    parser.add_argument('--instance-type', type=str, default='ml.g5.2xlarge',
+    parser.add_argument('--instance-type', type=str, default='ml.m5.4xlarge',
                         help='SageMaker instance type for training')
     
     parser.add_argument('--max-train-samples', type=int, default=1000,
