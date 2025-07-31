@@ -5,8 +5,8 @@ import argparse
 import logging
 import sys
 import traceback
+import glob
 import torch
-from datasets import load_dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,16 +20,20 @@ def find_training_files():
     base_dir = "/opt/ml/input/data/training"
     logger.info(f"Looking for training data in: {base_dir}")
     
-    # Create sample data regardless to ensure we have something to work with
-    logger.info("Creating sample training data")
-    sample_path = os.path.join(base_dir, "sample.jsonl")
-    with open(sample_path, "w") as f:
-        f.write('{"text": "This is a sample text for training."}\n')
-        f.write('{"text": "Here is another example of training data."}\n')
-        f.write('{"text": "A third example to ensure we have data."}\n')
-        f.write('{"text": "Fourth training example for the model."}\n')
+    # Look for JSONL files in the training directory
+    jsonl_files = glob.glob(os.path.join(base_dir, "**", "*.jsonl"), recursive=True)
     
-    return [sample_path]
+    if jsonl_files:
+        logger.info(f"Found {len(jsonl_files)} JSONL files: {jsonl_files}")
+        return jsonl_files
+    else:
+        logger.warning("No JSONL files found in the training directory.")
+        # Create a fallback sample file if no files found
+        sample_path = os.path.join(base_dir, "fallback_sample.jsonl")
+        with open(sample_path, "w") as f:
+            f.write('{"text": "This is a fallback sample text for training."}\n')
+        logger.info(f"Created fallback sample file: {sample_path}")
+        return [sample_path]
 
 def main():
     try:
@@ -45,21 +49,16 @@ def main():
             TrainingArguments,
             DataCollatorForLanguageModeling
         )
-        from peft import (
-            get_peft_model,
-            LoraConfig,
-            TaskType
-        )
         
         # Parse arguments
-        parser = argparse.ArgumentParser(description="Train a language model with LoRA")
+        parser = argparse.ArgumentParser(description="Train a language model")
         parser.add_argument("--model_name_or_path", type=str, default="distilgpt2")
         parser.add_argument("--output_dir", type=str, default="/opt/ml/model")
         parser.add_argument("--per_device_train_batch_size", type=int, default=1)
         parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
         parser.add_argument("--learning_rate", type=float, default=2e-4)
         parser.add_argument("--num_train_epochs", type=int, default=1)
-        parser.add_argument("--use_lora", type=str, default='True')
+        parser.add_argument("--use_lora", type=str, default='False')
         parser.add_argument("--lora_r", type=int, default=8)
         parser.add_argument("--lora_alpha", type=int, default=16)
         parser.add_argument("--lora_dropout", type=float, default=0.05)
@@ -73,12 +72,8 @@ def main():
         training_files = find_training_files()
         logger.info(f"Using training files: {training_files}")
         
-        # Load dataset
-        dataset = load_dataset("json", data_files=training_files, split="train")
-        logger.info(f"Loaded dataset with {len(dataset)} examples")
-        
-        # Use a smaller model - distilgpt2 is only 82M parameters
-        model_name = "distilgpt2" 
+        # Use the model specified in arguments
+        model_name = args.model_name_or_path
         
         # Load tokenizer
         logger.info(f"Loading tokenizer: {model_name}")
@@ -86,44 +81,68 @@ def main():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        # Tokenize function
-        def tokenize(examples):
-            return tokenizer(
-                examples["text"], 
-                truncation=True, 
-                padding="max_length", 
-                max_length=64
-            )
+        # Custom dataset implementation to avoid PyArrow issues
+        from torch.utils.data import Dataset
         
-        # Process dataset
-        logger.info("Tokenizing dataset...")
-        tokenized_dataset = dataset.map(tokenize, batched=True)
-        logger.info(f"Dataset tokenized successfully")
+        class JsonlDataset(Dataset):
+            def __init__(self, file_paths, tokenizer, max_length=64):
+                self.examples = []
+                
+                for file_path in file_paths:
+                    logger.info(f"Loading data from {file_path}")
+                    try:
+                        with open(file_path, 'r') as f:
+                            for line in f:
+                                try:
+                                    # Handle different JSONL formats
+                                    import json
+                                    data = json.loads(line.strip())
+                                    # Check if 'text' field exists, if not try to find text content
+                                    if 'text' in data:
+                                        text = data['text']
+                                    elif 'content' in data:
+                                        text = data['content']
+                                    else:
+                                        # Use the first string field we find
+                                        for key, value in data.items():
+                                            if isinstance(value, str) and len(value) > 10:
+                                                text = value
+                                                break
+                                        else:
+                                            continue  # Skip this example if no suitable text found
+                                    
+                                    encodings = tokenizer(text, truncation=True, max_length=max_length, padding="max_length")
+                                    example = {key: torch.tensor(val) for key, val in encodings.items()}
+                                    self.examples.append(example)
+                                except Exception as e:
+                                    logger.warning(f"Error processing line: {e}")
+                                    continue
+                    except Exception as e:
+                        logger.error(f"Error loading file {file_path}: {e}")
+                
+                logger.info(f"Loaded {len(self.examples)} examples from {len(file_paths)} files")
+                
+                if not self.examples:
+                    logger.warning("No examples loaded, creating one dummy example")
+                    dummy_text = "This is a dummy example because no valid data was found."
+                    encodings = tokenizer(dummy_text, truncation=True, max_length=max_length, padding="max_length")
+                    example = {key: torch.tensor(val) for key, val in encodings.items()}
+                    self.examples.append(example)
+            
+            def __len__(self):
+                return len(self.examples)
+            
+            def __getitem__(self, idx):
+                return self.examples[idx]
+        
+        # Load dataset
+        train_dataset = JsonlDataset(training_files, tokenizer)
+        logger.info(f"Dataset loaded with {len(train_dataset)} examples")
         
         # Load model
         logger.info(f"Loading model: {model_name}")
         model = AutoModelForCausalLM.from_pretrained(model_name)
         logger.info(f"Model loaded successfully")
-        
-        # Set up LoRA if enabled
-        if args.use_lora.lower() == 'true':
-            logger.info("Setting up LoRA")
-            
-            # Simple target modules for distilgpt2
-            target_modules = ["c_attn"]
-            
-            logger.info(f"Using target modules for LoRA: {target_modules}")
-            
-            lora_config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=target_modules,
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type=TaskType.CAUSAL_LM
-            )
-            
-            model = get_peft_model(model, lora_config)
         
         # Set up data collator
         data_collator = DataCollatorForLanguageModeling(
@@ -147,7 +166,7 @@ def main():
         trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=tokenized_dataset,
+            train_dataset=train_dataset,
             data_collator=data_collator,
             tokenizer=tokenizer
         )

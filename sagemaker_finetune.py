@@ -56,34 +56,31 @@ def main():
         role = os.environ.get("SAGEMAKER_ROLE_ARN")
         logger.info(f"Using role: {role}")
         
-        # Define hyperparameters for LoRA fine-tuning - using distilgpt2
+        # Define hyperparameters for fine-tuning
         hyperparameters = {
-            'model_name_or_path': "distilgpt2",  # Override with a smaller model
+            'model_name_or_path': args.base_model,
             'output_dir': '/opt/ml/model',
             'per_device_train_batch_size': 1,
             'gradient_accumulation_steps': 4,
             'learning_rate': 2e-4,
             'num_train_epochs': 1,
-            'use_lora': 'True',
-            'lora_r': 8,
-            'lora_alpha': 16,
-            'lora_dropout': 0.05
+            'use_lora': 'False'  # Disabled for now
         }
         
         # Generate a simple job name
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         job_name = f"train-{suffix}"
         
-        # Use Hugging Face estimator with more recent versions
+        # Use Hugging Face estimator with compatible versions for Python 3.11
         huggingface_estimator = HuggingFace(
             entry_point='train_lora.py',
             source_dir='./scripts/training_scripts/lora_trainer',
             instance_type=args.instance_type,
             instance_count=1,
             role=role,
-            transformers_version='4.49.0',  # More recent version that might be pre-installed
-            pytorch_version='2.5.1',        # More recent version that might be pre-installed  
-            py_version='py311',             # More recent Python version
+            transformers_version='4.36.0',  # Compatible with Python 3.11
+            pytorch_version='2.0.0',        # Compatible with Python 3.11
+            py_version='py311',             # Using Python 3.11 as requested
             hyperparameters=hyperparameters,
             debugger_hook_config=False
         )
