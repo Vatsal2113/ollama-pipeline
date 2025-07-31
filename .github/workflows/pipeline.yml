@@ -17,8 +17,12 @@ on:
         required: true
       training_data:
         description: 'Path to training data in S3'
-        default: 'data/train.jsonl'
+        default: 's3://your-bucket/data/train.jsonl'
         required: true
+      instance_type:
+        description: 'SageMaker instance type'
+        default: 'ml.p3.2xlarge'
+        required: false
 
 jobs:
   train-convert-deploy:
@@ -39,21 +43,109 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Create Training Scripts Directory
+        run: |
+          mkdir -p ./scripts/training_scripts
+          
+          # Create train.py script
+          cat > ./scripts/training_scripts/train.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import torch
+          from transformers import (
+              AutoModelForCausalLM,
+              AutoTokenizer,
+              Trainer,
+              TrainingArguments,
+              default_data_collator,
+          )
+          from datasets import load_dataset
+          from peft import LoraConfig, get_peft_model
+          
+          def main():
+              # Get hyperparameters from environment variables
+              model_id = os.environ["model_name_or_path"]
+              
+              # Load dataset
+              train_dataset = load_dataset("json", data_files=os.environ["SM_CHANNEL_TRAINING"], split="train")
+              
+              # Load model and tokenizer
+              model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+              tokenizer = AutoTokenizer.from_pretrained(model_id)
+              
+              # Apply LoRA configuration
+              lora_config = LoraConfig(
+                  r=8,
+                  lora_alpha=16,
+                  target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                  lora_dropout=0.05,
+                  bias="none",
+                  task_type="CAUSAL_LM"
+              )
+              model = get_peft_model(model, lora_config)
+              model.print_trainable_parameters()
+              
+              # Training arguments
+              training_args = TrainingArguments(
+                  output_dir=os.environ["output_dir"],
+                  per_device_train_batch_size=int(os.environ.get("per_device_train_batch_size", 1)),
+                  gradient_accumulation_steps=int(os.environ.get("gradient_accumulation_steps", 4)),
+                  learning_rate=float(os.environ.get("learning_rate", 2e-5)),
+                  num_train_epochs=int(os.environ.get("num_train_epochs", 3)),
+                  fp16=os.environ.get("fp16", "True").lower() == "true",
+                  save_strategy=os.environ.get("save_strategy", "steps"),
+                  save_steps=int(os.environ.get("save_steps", 500)),
+              )
+              
+              # Initialize trainer
+              trainer = Trainer(
+                  model=model,
+                  args=training_args,
+                  train_dataset=train_dataset,
+                  data_collator=default_data_collator,
+              )
+              
+              # Train model
+              trainer.train()
+              
+              # Save trained model and tokenizer
+              model.save_pretrained(os.environ["output_dir"])
+              tokenizer.save_pretrained(os.environ["output_dir"])
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          # Create requirements.txt
+          cat > ./scripts/training_scripts/requirements.txt << 'EOF'
+          transformers>=4.49.0
+          accelerate>=0.30.0
+          peft>=0.9.0
+          bitsandbytes>=0.43.0
+          trl>=0.7.11
+          datasets>=2.19.0
+          torch>=2.5.0
+          EOF
+
       - name: Fine-tune Model with SageMaker
         id: finetune
+        env:
+          SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
+          TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}
         run: |
-          # Properly quoted arguments to ensure values are passed correctly
+          # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
             --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }}" \
-            --training-data "${{ github.event.inputs.training_data || 'data/train.jsonl' }}" \
-            --output-bucket "${{ secrets.S3_BUCKET_NAME }}"
+            --training-data "${{ github.event.inputs.training_data }}" \
+            --output-bucket "${{ secrets.S3_BUCKET_NAME }}" \
+            --instance-type "${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}"
           
           # Get the training job name
           JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text)
