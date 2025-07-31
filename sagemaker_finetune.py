@@ -139,7 +139,7 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         instance_type=instance_type,
         instance_count=1,
         role=role,
-        image_uri="763104351884.dkr.ecr.us-east-2.amazonaws.com/huggingface-pytorch-tgi-inference:2.0.1-transformers4.35.0-gpu-py310-cu118-ubuntu22.04",
+        py_version="py311",  # Added this required parameter
         hyperparameters=hyperparameters,
         max_run=max_runtime,
         environment={
