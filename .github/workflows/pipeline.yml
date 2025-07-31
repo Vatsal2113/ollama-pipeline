@@ -9,7 +9,7 @@ on:
     inputs:
       model_name:
         description: 'Name for the final model'
-        default: 'tinyllama-custom'
+        default: 'gpt2-custom'
         required: true
       base_model:
         description: 'Base model to fine-tune'
@@ -226,15 +226,12 @@ jobs:
               main()
           EOF
           
-          # Create requirements.txt file with stable versions
+          # Create a minimal requirements.txt file
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
-          transformers==4.17.0
-          datasets==2.4.0
-          torch==1.10.2
-          peft==0.2.0
-          accelerate==0.12.0
-          scipy
-          scikit-learn
+          transformers
+          datasets
+          torch
+          peft
           EOF
 
       - name: Create SageMaker Fine-tuning Script
@@ -316,16 +313,16 @@ jobs:
                   suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
                   job_name = f"train-{suffix}"
                   
-                  # Use Hugging Face estimator with stable versions
+                  # Use Hugging Face estimator with more recent versions
                   huggingface_estimator = HuggingFace(
                       entry_point='train_lora.py',
                       source_dir='./scripts/training_scripts/lora_trainer',
                       instance_type=args.instance_type,
                       instance_count=1,
                       role=role,
-                      transformers_version='4.17.0',
-                      pytorch_version='1.10.2',
-                      py_version='py38',
+                      transformers_version='4.28.1',  # More recent version that might be pre-installed
+                      pytorch_version='2.0.0',        # More recent version that might be pre-installed  
+                      py_version='py310',             # More recent Python version
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False
                   )
