@@ -59,7 +59,7 @@ if [ -n "$FINETUNE_MODEL" ]; then
     --base-model "$FINETUNE_MODEL" \
     --training-data "$TRAINING_DATA" \
     --output-bucket "$S3_BUCKET" \
-    --instance-type "ml.m5.4xlarge"
+    --instance-type "ml.g4dn.xlarge"
   
   echo "Fine-tuning complete!"
 fi
