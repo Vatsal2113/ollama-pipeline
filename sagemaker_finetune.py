@@ -59,7 +59,7 @@ def setup_args():
     
     return args
 
-def finetune_model(base_model, training_data, output_bucket, instance_type='ml.g5.2xlarge'):
+def finetune_model(base_model, training_data, output_bucket, instance_type='ml.m5.4xlarge'):
     """Finetune model using Amazon SageMaker"""
     logger.info(f"Setting up SageMaker finetuning for {base_model}")
     
