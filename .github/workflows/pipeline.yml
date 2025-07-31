@@ -15,10 +15,6 @@ on:
         description: 'Base model to fine-tune'
         default: 'mistralai/Mistral-7B-v0-1'
         required: true
-      training_data_path:
-        description: 'Path to training data within bucket (e.g., data/train.jsonl)'
-        default: 'data/train.jsonl'
-        required: true
       instance_type:
         description: 'SageMaker instance type'
         default: 'ml.g4dn.xlarge'
@@ -54,7 +50,7 @@ jobs:
         run: |
           mkdir -p ./scripts/training_scripts
           
-          # Create train.py script with improved path handling
+          # Create train.py script with improved file handling
           cat > ./scripts/training_scripts/train.py << 'EOF'
           #!/usr/bin/env python3
           import os
@@ -85,34 +81,62 @@ jobs:
               parser.add_argument("--save_steps", type=int, default=500)
               return parser.parse_args()
 
-          def find_training_data():
-              """Find training data in SageMaker environment."""
-              # Common locations for SageMaker training data
-              possible_paths = [
-                  "/opt/ml/input/data/training",
-                  "/opt/ml/input/data/train"
-              ]
+          def find_jsonl_files():
+              """Find training data files in SageMaker environment."""
+              # List all directories under /opt/ml/input/data to debug
+              base_dir = "/opt/ml/input/data"
+              print(f"Searching for training data files in: {base_dir}")
               
-              # List all available data directories
-              all_data_dirs = glob.glob("/opt/ml/input/data/*")
-              print(f"Available data directories: {all_data_dirs}")
+              all_dirs = os.listdir(base_dir)
+              print(f"Found directories: {all_dirs}")
               
-              # Check common paths first
-              for path in possible_paths:
-                  if os.path.exists(path):
-                      files = os.listdir(path)
-                      if files:
-                          print(f"Found training data at {path}: {files}")
-                          return path
+              jsonl_files = []
               
-              # If not found in common locations, check all data directories
-              for data_dir in all_data_dirs:
-                  files = os.listdir(data_dir)
-                  if files:
-                      print(f"Found data files in {data_dir}: {files}")
-                      return data_dir
+              # Search through all directories for JSONL files
+              for directory in all_dirs:
+                  full_path = os.path.join(base_dir, directory)
+                  if os.path.isdir(full_path):
+                      print(f"Checking directory: {full_path}")
+                      # List all files in this directory
+                      files = os.listdir(full_path)
+                      print(f"Files in {full_path}: {files}")
                       
-              raise FileNotFoundError("No training data found in SageMaker environment")
+                      # Find JSON/JSONL files
+                      for file in files:
+                          if file.endswith('.jsonl') or file.endswith('.json'):
+                              file_path = os.path.join(full_path, file)
+                              jsonl_files.append(file_path)
+                              print(f"Found JSON/JSONL file: {file_path}")
+              
+              if not jsonl_files:
+                  # If we can't find direct JSON/JSONL files, try a recursive search
+                  print("No direct JSON/JSONL files found. Trying recursive search...")
+                  for root, dirs, files in os.walk(base_dir):
+                      for file in files:
+                          if file.endswith('.jsonl') or file.endswith('.json'):
+                              file_path = os.path.join(root, file)
+                              jsonl_files.append(file_path)
+                              print(f"Found JSON/JSONL file: {file_path}")
+              
+              if not jsonl_files:
+                  # Last resort - dump the contents of all files for debugging
+                  print("Still no JSON/JSONL files found. Showing all files:")
+                  for root, dirs, files in os.walk(base_dir):
+                      for file in files:
+                          file_path = os.path.join(root, file)
+                          print(f"File: {file_path}")
+                          # Check if it's a small text file we can print
+                          if os.path.getsize(file_path) < 10000:
+                              try:
+                                  with open(file_path, 'r') as f:
+                                      content = f.read(1000)  # Just read the first 1000 chars
+                                      print(f"Content preview: {content}")
+                              except:
+                                  pass
+                  
+                  raise FileNotFoundError(f"No JSON or JSONL files found in {base_dir}")
+              
+              return jsonl_files
 
           def main():
               # Parse command line arguments
@@ -122,15 +146,15 @@ jobs:
               
               # Find and load training data
               try:
-                  training_dir = find_training_data()
-                  print(f"Loading data from: {training_dir}")
-                  data_files = glob.glob(os.path.join(training_dir, "*.jsonl")) or glob.glob(os.path.join(training_dir, "*.json"))
-                  if not data_files:
-                      raise FileNotFoundError(f"No JSON or JSONL files found in {training_dir}")
-                      
-                  print(f"Loading dataset from files: {data_files}")
-                  train_dataset = load_dataset("json", data_files=data_files, split="train")
+                  jsonl_files = find_jsonl_files()
+                  print(f"Loading dataset from {len(jsonl_files)} files: {jsonl_files}")
+                  
+                  train_dataset = load_dataset("json", data_files=jsonl_files, split="train")
                   print(f"Dataset loaded with {len(train_dataset)} examples")
+                  
+                  # Print a sample from the dataset
+                  if len(train_dataset) > 0:
+                      print(f"Dataset sample: {train_dataset[0]}")
               except Exception as e:
                   print(f"Error loading training data: {str(e)}")
                   raise
@@ -202,7 +226,7 @@ jobs:
           bitsandbytes>=0.43.0
           trl>=0.7.11
           datasets>=2.19.0
-          torch>=2.5.1
+          torch==2.5.1
           EOF
 
       - name: Construct S3 URI and Fine-tune Model
@@ -212,8 +236,8 @@ jobs:
           TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.xlarge' }}
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
-          # Construct proper S3 URI for training data
-          TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/${{ github.event.inputs.training_data_path }}"
+          # Use the exact path to the training data folder, not a specific file
+          TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/training-data/"
           echo "Using training data from: $TRAINING_DATA_URI"
           echo "Using instance type: $TRAINING_INSTANCE_TYPE"
           

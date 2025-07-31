@@ -95,6 +95,10 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         s3_client = boto3.client('s3')
         bucket_name = training_data.replace('s3://', '').split('/')[0]
         prefix = '/'.join(training_data.replace('s3://', '').split('/')[1:])
+        if not prefix.endswith('/'):
+            prefix = prefix + '/'
+        
+        logger.info(f"Looking for training data in bucket: {bucket_name}, prefix: {prefix}")
         
         response = s3_client.list_objects_v2(
             Bucket=bucket_name,
@@ -105,8 +109,18 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
             logger.error(f"No files found at {training_data}")
             raise ValueError(f"No training data files found at {training_data}")
             
+        found_jsonl_files = False
+        for item in response['Contents']:
+            if item['Key'].endswith('.jsonl') or item['Key'].endswith('.json'):
+                found_jsonl_files = True
+                break
+                
+        if not found_jsonl_files:
+            logger.error(f"No JSON/JSONL files found at {training_data}")
+            raise ValueError(f"No JSON/JSONL files found at {training_data}")
+            
         logger.info(f"Found {len(response['Contents'])} files at {training_data}")
-        for item in response['Contents'][:5]:  # Log first 5 files
+        for item in response['Contents']:  # Log all files
             logger.info(f"- {item['Key']}")
     
     except Exception as e:
@@ -120,13 +134,12 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         instance_type=instance_type,
         instance_count=1,
         role=role,
-        transformers_version="4.49.0",
+        transformers_version="4.49",
         pytorch_version="2.5.1",
         py_version="py311",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
         dependencies=["./scripts/training_scripts/requirements.txt"],
-        distribution={"torch_distributed": {"enabled": True}},
         debugger_hook_config=False
     )
     logger.info("HuggingFace estimator created successfully")
