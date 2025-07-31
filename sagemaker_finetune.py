@@ -157,10 +157,24 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
     
     # Start the training job
     try:
-        # Generate a unique job name
+        # Generate a valid, compliant job name
         timestamp = int(time.time())
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        job_name = f"{base_model.replace('/', '-').lower()}-{timestamp}-{random_suffix}"
+        
+        # Extract just the model name without organization
+        model_name = base_model.split('/')[-1] if '/' in base_model else base_model
+        
+        # Clean the model name to only include allowed characters and limit length
+        model_part = ''.join(c if c.isalnum() else '-' for c in model_name)
+        model_part = model_part[:20]  # Limit to 20 chars to ensure total length is within 63
+        
+        # Ensure no consecutive hyphens and no leading/trailing hyphens
+        model_part = model_part.strip('-')
+        while '--' in model_part:
+            model_part = model_part.replace('--', '-')
+            
+        # Create the job name with timestamp and random suffix
+        job_name = f"{model_part}-{timestamp}-{random_suffix}"
         
         logger.info(f"Creating training-job with name: {job_name}")
         huggingface_estimator.fit(inputs=inputs, job_name=job_name)
