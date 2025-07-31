@@ -1,61 +1,126 @@
-name: Ollama Pipeline with SageMaker
+name: Ollama Model Pipeline
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      model_name:
+        description: 'Name for the final model'
+        default: 'mistral-custom'
+        required: true
+      base_model:
+        description: 'Base model to fine-tune'
+        default: 'mistralai/Mistral-7B-v0-1'
+        required: true
 
 jobs:
-  build-and-run:
+  train-convert-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v3
-      
-      - name: Create necessary directories
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
         run: |
-          mkdir -p ollama-data
-          mkdir -p scripts/training_scripts
-          
-      - name: Setup training script
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fine-tune Model with SageMaker
+        id: finetune
         run: |
-          cat > scripts/training_scripts/train.py << 'EOF'
-          #!/usr/bin/env python3
-          
-          import os
-          import torch
-          from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
-          from datasets import load_dataset
-          from peft import LoraConfig, get_peft_model
-          
-          # Load model and tokenizer
-          model_name = os.environ.get("model_name_or_path")
-          print(f"Loading model: {model_name}")
-          
-          # Train model
-          print("Starting training...")
-          # (simplified for demo)
-          print("Training complete!")
-          EOF
-      
-      - name: Build and run pipeline
+          python sagemaker_finetune.py
+          # Get the training job name
+          JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text)
+          echo "TRAINING_JOB_NAME=${JOB_NAME}" >> $GITHUB_ENV
+
+      - name: Download Fine-tuned Model
         run: |
-          docker compose up -d ollama
+          python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
+
+      - name: Merge LoRA Weights
+        run: |
+          python scripts/merge_lora.py --base-model ${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }} --lora-model ./fine-tuned-model --output-dir ./merged-model
+
+      - name: Convert to GGUF Format
+        run: |
+          python scripts/convert_to_gguf.py --input-dir ./merged-model --output-file ./models/${{ github.event.inputs.model_name || 'mistral-custom' }}.gguf --outtype q4_k_m
+
+      - name: Create Ollama Modelfile
+        run: |
+          python scripts/create_modelfile.py --gguf-path ./models/${{ github.event.inputs.model_name || 'mistral-custom' }}.gguf --model-name ${{ github.event.inputs.model_name || 'mistral-custom' }}
+
+      - name: Evaluate Model
+        id: evaluate
+        run: |
+          python scripts/evaluate_model.py --model-dir ./merged-model --output-file ./evaluation_results.json
+          echo "::set-output name=eval_file::evaluation_results.json"
+
+      - name: Upload to S3
+        run: |
+          MODEL_NAME=${{ github.event.inputs.model_name || 'mistral-custom' }}
+          BUCKET_NAME="${{ secrets.S3_BUCKET_NAME }}"
           
-          echo "Waiting for Ollama to initialize..."
-          sleep 30
+          # Create timestamp for versioning
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
           
-          docker compose up pipeline
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-2
-          MODELS_TO_PULL: "llama2 mistral"
-          FINETUNE_MODEL: "mistralai/Mistral-7B-v0-1"  # Changed from v0.1 to v0-1
-          TRAINING_DATA: "s3://ollama-lora-pipeline/training-data/"
-          S3_BUCKET: "ollama-lora-pipeline"
-          SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
-          TRAINING_INSTANCE_TYPE: "ml.g4dn.xlarge"
-          DEBUG: "true"
+          # Upload GGUF model
+          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/${MODEL_NAME}.gguf
+          
+          # Upload Modelfile
+          aws s3 cp ./Modelfile s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/Modelfile
+          
+          # Upload evaluation results
+          aws s3 cp ./evaluation_results.json s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/evaluation_results.json
+          
+          # Update "latest" pointer
+          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/${MODEL_NAME}.gguf
+          aws s3 cp ./Modelfile s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/Modelfile
+          aws s3 cp ./evaluation_results.json s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/evaluation_results.json
+          
+          echo "Model artifacts uploaded to: s3://${BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/"
+          echo "Latest model available at: s3://${BUCKET_NAME}/models/${MODEL_NAME}/latest/"
+
+      - name: Generate Report
+        run: |
+          python scripts/generate_report.py --eval-file ./evaluation_results.json --output-file ./report.md
+
+      - name: Upload Evaluation Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: model-evaluation
+          path: |
+            ./evaluation_results.json
+            ./report.md
+
+      - name: Add Evaluation Summary Comment
+        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const reportContent = fs.readFileSync('./report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: reportContent
+            });
