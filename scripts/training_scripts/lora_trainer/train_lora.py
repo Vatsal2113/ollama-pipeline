@@ -17,7 +17,8 @@ from peft import (
     get_peft_model,
     LoraConfig,
     TaskType,
-    prepare_model_for_kbit_training
+    PeftConfig,
+    PeftModel
 )
 
 logging.basicConfig(
@@ -62,6 +63,14 @@ def find_training_files():
 
 def main():
     try:
+        # Print version info first to help debug
+        logger.info(f"Python version: {sys.version}")
+        logger.info(f"PyTorch version: {torch.__version__}")
+        import transformers
+        logger.info(f"Transformers version: {transformers.__version__}")
+        import peft
+        logger.info(f"PEFT version: {peft.__version__}")
+        
         parser = argparse.ArgumentParser(description="Train a language model with LoRA")
         
         # Required parameters from SageMaker
@@ -82,9 +91,6 @@ def main():
         
         args = parser.parse_args()
         
-        # Print system info
-        logger.info(f"Python version: {sys.version}")
-        logger.info(f"PyTorch version: {torch.__version__}")
         logger.info(f"Training model: {args.model_name_or_path}")
         logger.info(f"CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
@@ -118,29 +124,21 @@ def main():
         logger.info(f"Loading model: {args.model_name_or_path}")
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path, 
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None
         )
         logger.info(f"Model loaded successfully")
         
         # Set up LoRA if enabled
         if args.use_lora.lower() == 'true':
             logger.info("Setting up LoRA")
-            # Get model's layer names for target_modules
-            model_modules = set()
-            for name, _ in model.named_modules():
-                parts = name.split('.')
-                if len(parts) > 0:
-                    model_modules.add(parts[0])
-            logger.info(f"Model modules: {model_modules}")
-            
-            # Select proper target modules based on model architecture
-            target_modules = ["query_key_value"]  # Default for many models
-            
-            # Different models have different attention module names
-            if any("q_proj" in name for name, _ in model.named_modules()):
-                target_modules = ["q_proj", "v_proj"]
-            elif any("query" in name for name, _ in model.named_modules()):
-                target_modules = ["query", "value"]
+            # Get model architecture to configure proper target modules
+            target_modules = []
+            if "llama" in args.model_name_or_path.lower() or "mistral" in args.model_name_or_path.lower() or "tinyllama" in args.model_name_or_path.lower():
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            else:
+                # Generic fallback
+                target_modules = ["query_key_value"]
                 
             logger.info(f"Using target modules for LoRA: {target_modules}")
             
@@ -170,8 +168,9 @@ def main():
             learning_rate=args.learning_rate,
             num_train_epochs=args.num_train_epochs,
             save_strategy="epoch",
-            fp16=torch.cuda.is_available(),
-            logging_steps=10
+            bf16=torch.cuda.is_available(),  # Use bfloat16 if available
+            logging_steps=10,
+            remove_unused_columns=False
         )
         
         # Initialize trainer
@@ -179,7 +178,8 @@ def main():
             model=model,
             args=training_args,
             train_dataset=tokenized_dataset,
-            data_collator=data_collator
+            data_collator=data_collator,
+            tokenizer=tokenizer
         )
         
         # Train model
@@ -188,7 +188,7 @@ def main():
         
         # Save model
         logger.info(f"Saving model to {args.output_dir}")
-        trainer.save_model(args.output_dir)
+        model.save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
         
         logger.info("Training completed successfully!")

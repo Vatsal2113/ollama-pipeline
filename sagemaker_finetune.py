@@ -77,17 +77,16 @@ def main():
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
         job_name = f"train-{suffix}"
         
-        # Use Hugging Face estimator with LoRA capabilities
-        # Using PyTorch 1.13.1 which is supported by SageMaker
+        # Use Hugging Face estimator with the latest versions as requested
         huggingface_estimator = HuggingFace(
             entry_point='train_lora.py',
             source_dir='./scripts/training_scripts/lora_trainer',
             instance_type=args.instance_type,
             instance_count=1,
             role=role,
-            transformers_version='4.26.0',
-            pytorch_version='1.13.1',  # Changed from 2.0.0 to 1.13.1
-            py_version='py39',         # Changed from py310 to py39 for compatibility
+            transformers_version='4.49.0',  # As requested
+            pytorch_version='2.5.1',        # As requested
+            py_version='py311',             # Python 3.11 as requested
             hyperparameters=hyperparameters
         )
         
