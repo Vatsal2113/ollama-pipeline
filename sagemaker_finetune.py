@@ -40,7 +40,7 @@ def setup_args():
     
     parser.add_argument(
         "--instance-type",
-        default=os.environ.get("TRAINING_INSTANCE_TYPE", "ml.p3.2xlarge"),
+        default=os.environ.get("TRAINING_INSTANCE_TYPE", "ml.g4dn.xlarge"),
         help="SageMaker training instance type"
     )
     
@@ -90,6 +90,29 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         "save_steps": 500,
     }
     
+    # Verify training data exists
+    try:
+        s3_client = boto3.client('s3')
+        bucket_name = training_data.replace('s3://', '').split('/')[0]
+        prefix = '/'.join(training_data.replace('s3://', '').split('/')[1:])
+        
+        response = s3_client.list_objects_v2(
+            Bucket=bucket_name,
+            Prefix=prefix
+        )
+        
+        if 'Contents' not in response or len(response['Contents']) == 0:
+            logger.error(f"No files found at {training_data}")
+            raise ValueError(f"No training data files found at {training_data}")
+            
+        logger.info(f"Found {len(response['Contents'])} files at {training_data}")
+        for item in response['Contents'][:5]:  # Log first 5 files
+            logger.info(f"- {item['Key']}")
+    
+    except Exception as e:
+        logger.error(f"Error checking training data: {str(e)}")
+        raise
+    
     # Set up the Hugging Face estimator
     huggingface_estimator = HuggingFace(
         entry_point="train.py",
@@ -102,7 +125,9 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         py_version="py311",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
-        dependencies=["./scripts/training_scripts/requirements.txt"]
+        dependencies=["./scripts/training_scripts/requirements.txt"],
+        distribution={"torch_distributed": {"enabled": True}},
+        debugger_hook_config=False
     )
     logger.info("HuggingFace estimator created successfully")
     

@@ -54,10 +54,11 @@ jobs:
         run: |
           mkdir -p ./scripts/training_scripts
           
-          # Create train.py script with fixes for command line arguments
+          # Create train.py script with improved path handling
           cat > ./scripts/training_scripts/train.py << 'EOF'
           #!/usr/bin/env python3
           import os
+          import glob
           import argparse
           import torch
           from transformers import (
@@ -69,7 +70,7 @@ jobs:
           )
           from datasets import load_dataset
           from peft import LoraConfig, get_peft_model
-          
+
           def parse_args():
               """Parse command line arguments passed by SageMaker."""
               parser = argparse.ArgumentParser(description="Fine-tune a model with LoRA")
@@ -83,27 +84,68 @@ jobs:
               parser.add_argument("--save_strategy", type=str, default="steps")
               parser.add_argument("--save_steps", type=int, default=500)
               return parser.parse_args()
-          
+
+          def find_training_data():
+              """Find training data in SageMaker environment."""
+              # Common locations for SageMaker training data
+              possible_paths = [
+                  "/opt/ml/input/data/training",
+                  "/opt/ml/input/data/train"
+              ]
+              
+              # List all available data directories
+              all_data_dirs = glob.glob("/opt/ml/input/data/*")
+              print(f"Available data directories: {all_data_dirs}")
+              
+              # Check common paths first
+              for path in possible_paths:
+                  if os.path.exists(path):
+                      files = os.listdir(path)
+                      if files:
+                          print(f"Found training data at {path}: {files}")
+                          return path
+              
+              # If not found in common locations, check all data directories
+              for data_dir in all_data_dirs:
+                  files = os.listdir(data_dir)
+                  if files:
+                      print(f"Found data files in {data_dir}: {files}")
+                      return data_dir
+                      
+              raise FileNotFoundError("No training data found in SageMaker environment")
+
           def main():
               # Parse command line arguments
               args = parse_args()
               
               print(f"Using model: {args.model_name_or_path}")
               
-              # Check if running in SageMaker
-              training_dir = os.environ.get("SM_CHANNEL_TRAINING")
-              if training_dir:
-                  print(f"Loading data from SageMaker path: {training_dir}")
-                  train_dataset = load_dataset("json", data_files=training_dir, split="train")
-              else:
-                  raise ValueError("Training data directory not found in SM_CHANNEL_TRAINING")
+              # Find and load training data
+              try:
+                  training_dir = find_training_data()
+                  print(f"Loading data from: {training_dir}")
+                  data_files = glob.glob(os.path.join(training_dir, "*.jsonl")) or glob.glob(os.path.join(training_dir, "*.json"))
+                  if not data_files:
+                      raise FileNotFoundError(f"No JSON or JSONL files found in {training_dir}")
+                      
+                  print(f"Loading dataset from files: {data_files}")
+                  train_dataset = load_dataset("json", data_files=data_files, split="train")
+                  print(f"Dataset loaded with {len(train_dataset)} examples")
+              except Exception as e:
+                  print(f"Error loading training data: {str(e)}")
+                  raise
               
               # Load model and tokenizer
-              model = AutoModelForCausalLM.from_pretrained(
-                  args.model_name_or_path, 
-                  torch_dtype=torch.bfloat16
-              )
-              tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+              try:
+                  print(f"Loading model from {args.model_name_or_path}")
+                  model = AutoModelForCausalLM.from_pretrained(
+                      args.model_name_or_path, 
+                      torch_dtype=torch.bfloat16
+                  )
+                  tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+              except Exception as e:
+                  print(f"Error loading model: {str(e)}")
+                  raise
               
               # Apply LoRA configuration
               lora_config = LoraConfig(
@@ -147,7 +189,7 @@ jobs:
               model.save_pretrained(args.output_dir)
               tokenizer.save_pretrained(args.output_dir)
               print(f"Model saved to {args.output_dir}")
-          
+
           if __name__ == "__main__":
               main()
           EOF
