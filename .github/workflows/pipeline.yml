@@ -21,7 +21,7 @@ on:
         required: true
       instance_type:
         description: 'SageMaker instance type'
-        default: 'ml.p3.2xlarge'
+        default: 'ml.g4dn.xlarge'
         required: false
 
 jobs:
@@ -138,19 +138,20 @@ jobs:
         id: finetune
         env:
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
-          TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}
+          TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.xlarge' }}
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
           # Construct proper S3 URI for training data
           TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/${{ github.event.inputs.training_data_path }}"
           echo "Using training data from: $TRAINING_DATA_URI"
+          echo "Using instance type: $TRAINING_INSTANCE_TYPE"
           
           # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
             --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-7B-v0-1' }}" \
             --training-data "$TRAINING_DATA_URI" \
             --output-bucket "${S3_BUCKET_NAME}" \
-            --instance-type "${{ github.event.inputs.instance_type || 'ml.p3.2xlarge' }}"
+            --instance-type "$TRAINING_INSTANCE_TYPE"
           
           # Get the training job name
           JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text)
