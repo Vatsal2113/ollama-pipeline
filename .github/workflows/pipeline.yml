@@ -9,11 +9,11 @@ on:
     inputs:
       model_name:
         description: 'Name for the final model'
-        default: 'mistral-custom'
+        default: 'tinyllama-custom'
         required: true
       base_model:
         description: 'Base model to fine-tune'
-        default: 'mistralai/Mistral-3B-Instruct-v0.2'
+        default: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0'
         required: true
       instance_type:
         description: 'SageMaker instance type'
@@ -44,272 +44,342 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install boto3 sagemaker huggingface-hub datasets torch peft
 
-      - name: Create Training Scripts Directory
+      - name: Create LoRA Training Scripts
         run: |
-          mkdir -p ./scripts/training_scripts
+          mkdir -p ./scripts/training_scripts/lora_trainer
           
-          # Create simplified QLoRA script
-          cat > ./scripts/training_scripts/run_qlora_simple.py << 'EOF'
+          # Create a simple LoRA training script
+          cat > ./scripts/training_scripts/lora_trainer/train_lora.py << 'EOF'
           #!/usr/bin/env python3
+
           import os
-          import sys
-          import json
-          import traceback
           import argparse
+          import logging
+          import sys
           import torch
+          from datasets import load_dataset
           from transformers import (
               AutoModelForCausalLM,
               AutoTokenizer,
               Trainer,
               TrainingArguments,
-              BitsAndBytesConfig,
-              default_data_collator,
-              set_seed,
+              DataCollatorForLanguageModeling
           )
-          from datasets import load_dataset
           from peft import (
-              LoraConfig,
-              prepare_model_for_kbit_training,
               get_peft_model,
+              LoraConfig,
+              TaskType,
+              prepare_model_for_kbit_training
           )
 
-          def log_error(e):
-              print(f"ERROR: {str(e)}")
-              print(f"Error type: {type(e).__name__}")
-              print(f"Traceback:\n{''.join(traceback.format_tb(e.__traceback__))}")
-              
-              # Print system info for debugging
-              print(f"Python version: {sys.version}")
-              print(f"PyTorch version: {torch.__version__}")
-              print(f"CUDA available: {torch.cuda.is_available()}")
-              if torch.cuda.is_available():
-                  print(f"CUDA version: {torch.version.cuda}")
-                  print(f"GPU: {torch.cuda.get_device_name(0)}")
-                  print(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9} GB")
-                  print(f"Free GPU memory: {torch.cuda.memory_reserved(0) / 1e9} GB used")
+          logging.basicConfig(
+              level=logging.INFO,
+              format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+              handlers=[logging.StreamHandler(sys.stdout)]
+          )
+          logger = logging.getLogger(__name__)
 
-          def find_jsonl_files():
-              """Find all JSONL files in the SageMaker environment."""
-              base_dir = "/opt/ml/input/data"
-              print(f"Searching for training data in: {base_dir}")
+          def find_training_files():
+              """Find training data files in SageMaker paths."""
+              base_dir = "/opt/ml/input/data/training"
+              logger.info(f"Looking for training data in: {base_dir}")
               
-              # List all available directories
-              all_dirs = []
-              try:
-                  all_dirs = os.listdir(base_dir)
-                  print(f"Available directories: {all_dirs}")
-              except Exception as e:
-                  print(f"Error listing {base_dir}: {str(e)}")
-              
-              # Search for JSONL files
-              jsonl_files = []
-              for dir_name in all_dirs:
-                  dir_path = os.path.join(base_dir, dir_name)
-                  if os.path.isdir(dir_path):
-                      try:
-                          files = os.listdir(dir_path)
-                          print(f"Files in {dir_path}: {files}")
-                          
-                          # Find all JSON/JSONL files
-                          for file in files:
-                              if file.endswith('.json') or file.endswith('.jsonl'):
-                                  file_path = os.path.join(dir_path, file)
-                                  jsonl_files.append(file_path)
-                                  print(f"Found JSON/JSONL file: {file_path}")
-                      except Exception as e:
-                          print(f"Error listing {dir_path}: {str(e)}")
-              
-              # If no files found, create a sample file
-              if not jsonl_files:
-                  print("No JSON/JSONL files found. Creating sample data...")
-                  sample_path = "/tmp/sample_data.json"
-                  with open(sample_path, 'w') as f:
-                      for i in range(10):
-                          f.write(json.dumps({
-                              "text": f"This is a sample training example {i}."
-                          }) + "\n")
-                  jsonl_files = [sample_path]
-                  print(f"Created sample data at {sample_path}")
-              
-              return jsonl_files
+              if not os.path.exists(base_dir):
+                  logger.error(f"Directory not found: {base_dir}")
+                  # Create sample data as fallback
+                  logger.info("Creating sample training data")
+                  os.makedirs("/tmp/sample_data", exist_ok=True)
+                  with open("/tmp/sample_data/sample.jsonl", "w") as f:
+                      f.write('{"text": "This is a sample text for training."}\n')
+                      f.write('{"text": "Here is another example of training data."}\n')
+                  return ["/tmp/sample_data/sample.jsonl"]
 
-          def preprocess_function(examples, tokenizer, max_length=512):
-              """Tokenize the input text."""
-              return tokenizer(
-                  examples["text"],
-                  truncation=True,
-                  max_length=max_length,
-                  padding="max_length",
-                  return_tensors=None,
-              )
+              files = []
+              for filename in os.listdir(base_dir):
+                  if filename.endswith('.json') or filename.endswith('.jsonl'):
+                      files.append(os.path.join(base_dir, filename))
+                      logger.info(f"Found training file: {filename}")
+              
+              if not files:
+                  logger.warning("No JSON/JSONL files found in training directory")
+                  # Create sample data
+                  sample_path = os.path.join(base_dir, "sample.jsonl")
+                  with open(sample_path, "w") as f:
+                      f.write('{"text": "This is a sample text for training."}\n')
+                      f.write('{"text": "Here is another example of training data."}\n')
+                  files.append(sample_path)
+                  logger.info(f"Created sample data at: {sample_path}")
+              
+              return files
 
           def main():
               try:
-                  # Parse arguments
-                  parser = argparse.ArgumentParser()
-                  parser.add_argument("--model_name_or_path", type=str)
-                  parser.add_argument("--output_dir", type=str)
-                  parser.add_argument("--use_4bit", type=lambda x: x.lower() == 'true', default=True)
-                  parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="float16")
-                  parser.add_argument("--bnb_4bit_quant_type", type=str, default="nf4")
-                  parser.add_argument("--use_nested_quant", type=lambda x: x.lower() == 'true', default=True)
-                  parser.add_argument("--num_train_epochs", type=int, default=3)
-                  parser.add_argument("--per_device_train_batch_size", type=int, default=1)
-                  parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-                  parser.add_argument("--learning_rate", type=float, default=2e-5)
-                  parser.add_argument("--fp16", type=lambda x: x.lower() == 'true', default=True)
-                  parser.add_argument("--save_strategy", type=str, default="steps")
-                  parser.add_argument("--save_steps", type=int, default=500)
-                  parser.add_argument("--optim", type=str, default="paged_adamw_8bit")
+                  parser = argparse.ArgumentParser(description="Train a language model with LoRA")
+                  
+                  # Required parameters from SageMaker
+                  parser.add_argument("--model_name_or_path", type=str, required=True)
+                  parser.add_argument("--output_dir", type=str, required=True)
+                  
+                  # Optional parameters
+                  parser.add_argument("--per_device_train_batch_size", type=int, default=2)
+                  parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+                  parser.add_argument("--learning_rate", type=float, default=2e-4)
+                  parser.add_argument("--num_train_epochs", type=int, default=1)
+                  
+                  # LoRA parameters
+                  parser.add_argument("--use_lora", type=str, default='True')
+                  parser.add_argument("--lora_r", type=int, default=8)
+                  parser.add_argument("--lora_alpha", type=int, default=16)
+                  parser.add_argument("--lora_dropout", type=float, default=0.05)
+                  
                   args = parser.parse_args()
                   
-                  # Set random seed
-                  set_seed(42)
-                  
-                  # Print versions and available GPU memory
-                  print(f"Python version: {sys.version}")
-                  print(f"PyTorch version: {torch.__version__}")
-                  print(f"CUDA available: {torch.cuda.is_available()}")
+                  # Print system info
+                  logger.info(f"Python version: {sys.version}")
+                  logger.info(f"PyTorch version: {torch.__version__}")
+                  logger.info(f"Training model: {args.model_name_or_path}")
+                  logger.info(f"CUDA available: {torch.cuda.is_available()}")
                   if torch.cuda.is_available():
-                      print(f"CUDA version: {torch.version.cuda}")
-                      print(f"GPU: {torch.cuda.get_device_name(0)}")
-                      print(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9} GB")
+                      logger.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
                   
-                  # Find training data
-                  jsonl_files = find_jsonl_files()
+                  # Find training files
+                  training_files = find_training_files()
+                  logger.info(f"Using training files: {training_files}")
                   
                   # Load dataset
-                  print(f"Loading dataset from {len(jsonl_files)} files...")
-                  raw_dataset = load_dataset("json", data_files=jsonl_files, split="train")
-                  print(f"Loaded dataset with {len(raw_dataset)} examples")
+                  dataset = load_dataset("json", data_files=training_files, split="train")
+                  logger.info(f"Loaded dataset with {len(dataset)} examples")
+                  logger.info(f"Sample: {dataset[0] if len(dataset) > 0 else 'No data'}")
                   
-                  # Print a sample
-                  if len(raw_dataset) > 0:
-                      print(f"Dataset sample: {raw_dataset[0]}")
-                  
-                  # Load tokenizer first to tokenize the dataset
-                  print(f"Loading tokenizer from {args.model_name_or_path}")
+                  # Load tokenizer
+                  logger.info(f"Loading tokenizer: {args.model_name_or_path}")
                   tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
                   if tokenizer.pad_token is None:
                       tokenizer.pad_token = tokenizer.eos_token
-                      
-                  # Tokenize the dataset
-                  print("Tokenizing dataset...")
-                  tokenized_dataset = raw_dataset.map(
-                      lambda examples: preprocess_function(examples, tokenizer),
-                      batched=True,
-                      remove_columns=["text"]
-                  )
-                  print(f"Tokenized dataset size: {len(tokenized_dataset)}")
                   
-                  # Set up quantization configuration
-                  compute_dtype = getattr(torch, args.bnb_4bit_compute_dtype)
-                  print(f"Using compute dtype: {compute_dtype}")
+                  # Tokenize function
+                  def tokenize(examples):
+                      return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=128)
                   
-                  bnb_config = BitsAndBytesConfig(
-                      load_in_4bit=args.use_4bit,
-                      bnb_4bit_quant_type=args.bnb_4bit_quant_type,
-                      bnb_4bit_compute_dtype=compute_dtype,
-                      bnb_4bit_use_double_quant=args.use_nested_quant,
-                  )
+                  # Process dataset
+                  logger.info("Tokenizing dataset...")
+                  tokenized_dataset = dataset.map(tokenize, batched=True)
+                  logger.info(f"Dataset tokenized")
                   
-                  # Load base model with quantization
-                  print(f"Loading model {args.model_name_or_path} with 4-bit quantization...")
+                  # Load model
+                  logger.info(f"Loading model: {args.model_name_or_path}")
                   model = AutoModelForCausalLM.from_pretrained(
-                      args.model_name_or_path,
-                      quantization_config=bnb_config,
-                      device_map="auto",
-                      trust_remote_code=True,
-                      torch_dtype=torch.float16
+                      args.model_name_or_path, 
+                      torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                  )
+                  logger.info(f"Model loaded successfully")
+                  
+                  # Set up LoRA if enabled
+                  if args.use_lora.lower() == 'true':
+                      logger.info("Setting up LoRA")
+                      # Get model's layer names for target_modules
+                      model_modules = set()
+                      for name, _ in model.named_modules():
+                          parts = name.split('.')
+                          if len(parts) > 0:
+                              model_modules.add(parts[0])
+                      logger.info(f"Model modules: {model_modules}")
+                      
+                      # Select proper target modules based on model architecture
+                      target_modules = ["query_key_value"]  # Default for many models
+                      
+                      # Different models have different attention module names
+                      if any("q_proj" in name for name, _ in model.named_modules()):
+                          target_modules = ["q_proj", "v_proj"]
+                      elif any("query" in name for name, _ in model.named_modules()):
+                          target_modules = ["query", "value"]
+                          
+                      logger.info(f"Using target modules for LoRA: {target_modules}")
+                      
+                      lora_config = LoraConfig(
+                          r=args.lora_r,
+                          lora_alpha=args.lora_alpha,
+                          target_modules=target_modules,
+                          lora_dropout=args.lora_dropout,
+                          bias="none",
+                          task_type=TaskType.CAUSAL_LM
+                      )
+                      
+                      model = get_peft_model(model, lora_config)
+                      model.print_trainable_parameters()
+                  
+                  # Set up data collator
+                  data_collator = DataCollatorForLanguageModeling(
+                      tokenizer=tokenizer, 
+                      mlm=False
                   )
                   
-                  # Prepare model for k-bit training
-                  model = prepare_model_for_kbit_training(model)
-                  
-                  # Set up LoRA configuration
-                  # For Mistral, target modules should include attention layers
-                  target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                  
-                  # For some models we might need to detect the right target modules
-                  if "mistral" in args.model_name_or_path.lower():
-                      print("Using Mistral-specific target modules")
-                  elif "llama" in args.model_name_or_path.lower():
-                      print("Using LLaMA-specific target modules")
-                      target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                  
-                  print(f"LoRA target modules: {target_modules}")
-                  
-                  lora_config = LoraConfig(
-                      r=16,
-                      lora_alpha=32,
-                      lora_dropout=0.05,
-                      bias="none",
-                      task_type="CAUSAL_LM",
-                      target_modules=target_modules
-                  )
-                  
-                  # Apply LoRA to model
-                  model = get_peft_model(model, lora_config)
-                  model.print_trainable_parameters()
-                  
-                  # Set up training arguments
+                  # Training arguments
                   training_args = TrainingArguments(
                       output_dir=args.output_dir,
                       per_device_train_batch_size=args.per_device_train_batch_size,
                       gradient_accumulation_steps=args.gradient_accumulation_steps,
                       learning_rate=args.learning_rate,
                       num_train_epochs=args.num_train_epochs,
-                      fp16=args.fp16,
-                      save_strategy=args.save_strategy,
-                      save_steps=args.save_steps,
-                      logging_steps=10,
-                      optim=args.optim,
-                      lr_scheduler_type="cosine",
-                      warmup_ratio=0.05,
-                      report_to="none"
+                      save_strategy="epoch",
+                      fp16=torch.cuda.is_available(),
+                      logging_steps=10
                   )
                   
-                  # Initialize trainer with a simple data collator
+                  # Initialize trainer
                   trainer = Trainer(
                       model=model,
                       args=training_args,
                       train_dataset=tokenized_dataset,
-                      data_collator=default_data_collator,
-                      tokenizer=tokenizer,
+                      data_collator=data_collator
                   )
                   
-                  # Train!
-                  print("Starting training...")
+                  # Train model
+                  logger.info("Starting training...")
                   trainer.train()
                   
                   # Save model
-                  print(f"Saving model to {args.output_dir}")
-                  model.save_pretrained(args.output_dir)
+                  logger.info(f"Saving model to {args.output_dir}")
+                  trainer.save_model(args.output_dir)
                   tokenizer.save_pretrained(args.output_dir)
                   
-                  print("Training completed successfully!")
-              
+                  logger.info("Training completed successfully!")
+                  
               except Exception as e:
-                  log_error(e)
+                  logger.error(f"Error: {str(e)}", exc_info=True)
                   sys.exit(1)
 
           if __name__ == "__main__":
               main()
           EOF
           
-          # Create requirements.txt with compatible versions
-          cat > ./scripts/training_scripts/requirements.txt << 'EOF'
-          transformers==4.28.1
-          accelerate==0.20.3
-          peft==0.4.0
-          bitsandbytes==0.40.2
-          datasets==2.12.0
+          # Create requirements.txt file
+          cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
+          transformers>=4.26.0
+          datasets>=2.9.0
+          torch>=2.0.0
+          peft>=0.3.0
           scipy
           scikit-learn
-          sentencepiece
           EOF
+
+      - name: Create SageMaker Fine-tuning Script
+        run: |
+          cat > sagemaker_finetune.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import argparse
+          import logging
+          import boto3
+          import sagemaker
+          import time
+          import string
+          import random
+          from sagemaker.huggingface import HuggingFace
+
+          # Configure logging
+          logging.basicConfig(
+              level=logging.INFO,
+              format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+          )
+          logger = logging.getLogger("sagemaker_finetune")
+
+          def setup_args():
+              """Parse command line arguments."""
+              parser = argparse.ArgumentParser(description="Fine-tune a model with SageMaker")
+              
+              parser.add_argument(
+                  "--base-model",
+                  required=True,
+                  help="Base model to fine-tune"
+              )
+              
+              parser.add_argument(
+                  "--training-data",
+                  required=True,
+                  help="S3 URI of training data"
+              )
+              
+              parser.add_argument(
+                  "--output-bucket",
+                  required=True,
+                  help="S3 bucket for output model"
+              )
+              
+              parser.add_argument(
+                  "--instance-type",
+                  default="ml.g4dn.xlarge",
+                  help="SageMaker training instance type"
+              )
+              
+              return parser.parse_args()
+
+          def main():
+              args = setup_args()
+              try:
+                  logger.info(f"Setting up SageMaker finetuning for {args.base_model}")
+                  
+                  # Set up SageMaker session
+                  sagemaker_session = sagemaker.Session()
+                  role = os.environ.get("SAGEMAKER_ROLE_ARN")
+                  logger.info(f"Using role: {role}")
+                  
+                  # Define hyperparameters for LoRA fine-tuning
+                  hyperparameters = {
+                      'model_name_or_path': args.base_model,
+                      'output_dir': '/opt/ml/model',
+                      'per_device_train_batch_size': 2,
+                      'gradient_accumulation_steps': 1,
+                      'learning_rate': 2e-4,
+                      'num_train_epochs': 1,
+                      
+                      # LoRA specific parameters
+                      'use_lora': 'True',
+                      'lora_r': 8,
+                      'lora_alpha': 16,
+                      'lora_dropout': 0.05
+                  }
+                  
+                  # Generate a simple job name
+                  timestamp = int(time.time())
+                  suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+                  job_name = f"train-{suffix}"
+                  
+                  # Use Hugging Face estimator with LoRA capabilities
+                  huggingface_estimator = HuggingFace(
+                      entry_point='train_lora.py',
+                      source_dir='./scripts/training_scripts/lora_trainer',
+                      instance_type=args.instance_type,
+                      instance_count=1,
+                      role=role,
+                      transformers_version='4.26.0',
+                      pytorch_version='2.0.0',
+                      py_version='py310',
+                      hyperparameters=hyperparameters
+                  )
+                  
+                  # Create training job inputs
+                  inputs = {'training': args.training_data}
+                  
+                  # Start the training job
+                  logger.info(f"Starting training job: {job_name}")
+                  huggingface_estimator.fit(inputs=inputs, job_name=job_name)
+                  logger.info(f"Training job {job_name} completed")
+                  
+                  # Get the model artifacts
+                  model_data = huggingface_estimator.model_data
+                  logger.info(f"Model artifacts: {model_data}")
+                  
+              except Exception as e:
+                  logger.error(f"Error during fine-tuning: {str(e)}")
+                  exit(1)
+
+          if __name__ == "__main__":
+              main()
+          EOF
+          chmod +x sagemaker_finetune.py
 
       - name: Construct S3 URI and Fine-tune Model
         id: finetune
@@ -325,7 +395,7 @@ jobs:
           
           # Run the SageMaker fine-tuning script
           python sagemaker_finetune.py \
-            --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-3B-Instruct-v0.2' }}" \
+            --base-model "${{ github.event.inputs.base_model || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}" \
             --training-data "$TRAINING_DATA_URI" \
             --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "$TRAINING_INSTANCE_TYPE"
@@ -340,16 +410,16 @@ jobs:
 
       - name: Merge LoRA Weights
         run: |
-          python scripts/merge_lora.py --base-model "${{ github.event.inputs.base_model || 'mistralai/Mistral-3B-Instruct-v0.2' }}" --lora-model ./fine-tuned-model --output-dir ./merged-model
+          python scripts/merge_lora.py --base-model "${{ github.event.inputs.base_model || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}" --lora-model ./fine-tuned-model --output-dir ./merged-model
 
       - name: Convert to GGUF Format
         run: |
           mkdir -p ./models
-          python scripts/convert_to_gguf.py --input-dir ./merged-model --output-file ./models/${{ github.event.inputs.model_name || 'mistral-custom' }}.gguf --outtype q4_k_m
+          python scripts/convert_to_gguf.py --input-dir ./merged-model --output-file ./models/${{ github.event.inputs.model_name || 'tinyllama-custom' }}.gguf --outtype q4_k_m
 
       - name: Create Ollama Modelfile
         run: |
-          python scripts/create_modelfile.py --gguf-path ./models/${{ github.event.inputs.model_name || 'mistral-custom' }}.gguf --model-name ${{ github.event.inputs.model_name || 'mistral-custom' }}
+          python scripts/create_modelfile.py --gguf-path ./models/${{ github.event.inputs.model_name || 'tinyllama-custom' }}.gguf --model-name ${{ github.event.inputs.model_name || 'tinyllama-custom' }}
 
       - name: Evaluate Model
         id: evaluate
@@ -361,7 +431,7 @@ jobs:
         env:
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
-          MODEL_NAME=${{ github.event.inputs.model_name || 'mistral-custom' }}
+          MODEL_NAME=${{ github.event.inputs.model_name || 'tinyllama-custom' }}
           
           # Create timestamp for versioning
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
