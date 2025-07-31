@@ -77,10 +77,14 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
     role = os.environ.get("SAGEMAKER_ROLE_ARN")
     logger.info(f"Using SageMaker execution role: {role}")
     
-    # Configure hyperparameters
+    # Configure hyperparameters - use 4-bit quantization to reduce memory usage
     hyperparameters = {
         "model_name_or_path": base_model,
         "output_dir": "/opt/ml/model",
+        "use_4bit": True,
+        "bnb_4bit_compute_dtype": "float16",
+        "bnb_4bit_quant_type": "nf4",
+        "use_nested_quant": True,
         "num_train_epochs": 3,
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": 4,
@@ -88,6 +92,7 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
         "fp16": True,
         "save_strategy": "steps",
         "save_steps": 500,
+        "optim": "paged_adamw_8bit",
     }
     
     # Verify training data exists
@@ -120,27 +125,31 @@ def finetune_model(base_model, training_data, output_bucket, instance_type, max_
             raise ValueError(f"No JSON/JSONL files found at {training_data}")
             
         logger.info(f"Found {len(response['Contents'])} files at {training_data}")
-        for item in response['Contents']:  # Log all files
+        for item in response['Contents'][:5]:  # Log first 5 files
             logger.info(f"- {item['Key']}")
     
     except Exception as e:
         logger.error(f"Error checking training data: {str(e)}")
         raise
     
-    # Set up the Hugging Face estimator
+    # Set up the Hugging Face estimator with a properly configured image
     huggingface_estimator = HuggingFace(
-        entry_point="train.py",
+        entry_point="run_qlora.py",  # Use QLoRA script from the container
         source_dir="./scripts/training_scripts",
         instance_type=instance_type,
         instance_count=1,
         role=role,
-        transformers_version="4.49.0",
-        pytorch_version="2.5.1",
-        py_version="py311",
+        image_uri="763104351884.dkr.ecr.us-east-2.amazonaws.com/huggingface-pytorch-tgi-inference:2.0.1-transformers4.35.0-gpu-py310-cu118-ubuntu22.04",
         hyperparameters=hyperparameters,
         max_run=max_runtime,
-        dependencies=["./scripts/training_scripts/requirements.txt"],
-        debugger_hook_config=False
+        environment={
+            "TRANSFORMERS_CACHE": "/tmp/transformers_cache",
+            "DISABLE_TELEMETRY": "true"
+        },
+        debugger_hook_config=False,
+        metric_definitions=[
+            {"Name": "train:loss", "Regex": "loss=([0-9\\.]+)"}
+        ]
     )
     logger.info("HuggingFace estimator created successfully")
     
