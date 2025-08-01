@@ -39,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
       - name: Install Dependencies
         run: |
@@ -551,7 +551,7 @@ jobs:
           # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
           transformers==4.28.1
-          torch==1.13.1
+          torch==2.5.1
           accelerate==0.16.0
           peft==0.3.0
           bitsandbytes==0.38.0
