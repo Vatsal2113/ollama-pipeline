@@ -1,5 +1,5 @@
 # Updated pipeline.yml for Vatsal2113
-# Date: 2025-08-01 18:22:33
+# Date: 2025-08-01 21:01:16
 # Using TinyLlama with gradient fix and safe downloads
 
 name: Ollama Model Pipeline
@@ -1397,3 +1397,18 @@ jobs:
               parser = argparse.ArgumentParser(description="Generate evaluation report")
               parser.add_argument("--eval-file", required=True, help="Evaluation results file")
               parser.add_argument("--output-file", required=True, help="Output report file")
+              
+              args = parser.parse_args()
+              
+              # Load evaluation results
+              with open(args.eval_file, "r") as f:
+                  results = json.load(f)
+              
+              # Generate Markdown report
+              report = "# Model Evaluation Report\n\n"
+              report += f"## Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+              
+              # Add metrics section
+              report += "## Metrics\n\n"
+              for metric, value in results["metrics"].items():
+                  report += f"- **{metric}:** {value}\n"
