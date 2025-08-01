@@ -39,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'  # Python 3.10 as requested
+          python-version: '3.11'  # Python 3.10 as requested
 
       - name: Install Dependencies
         run: |
@@ -211,7 +211,7 @@ jobs:
               "bos_token_id": 1,
               "eos_token_id": 2,
               "tie_word_embeddings": False,
-              "transformers_version": "4.28.1"
+              "transformers_version": "4.49.0"
           }
 
           # Write config.json
@@ -664,8 +664,8 @@ jobs:
           
           # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
-          transformers==4.28.1
-          torch==2.0.0  # PyTorch 2.0.0 as requested
+          transformers==4.49.0
+          torch==2.5.1  # PyTorch 2.0.0 as requested
           accelerate==0.16.0
           peft==0.3.0
           bitsandbytes==0.38.0
@@ -761,9 +761,9 @@ jobs:
                       instance_type=args.instance_type,
                       instance_count=1,
                       role=role,
-                      transformers_version='4.28.1',
-                      pytorch_version='2.0.0',  # PyTorch 2.0.0 as requested
-                      py_version='py310',       # Python 3.10 as requested
+                      transformers_version='4.49.0',
+                      pytorch_version='2.5.1',  # PyTorch 2.0.0 as requested
+                      py_version='py311',       # Python 3.10 as requested
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False,
                       environment={
