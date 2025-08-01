@@ -645,7 +645,7 @@ jobs:
                       role=role,
                       transformers_version='4.28.1',
                       pytorch_version='2.5.1',
-                      py_version='py310'
+                      py_version='py310',
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False
                   )
