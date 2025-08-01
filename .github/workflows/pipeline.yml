@@ -17,7 +17,7 @@ on:
         required: true
       instance_type:
         description: 'SageMaker instance type'
-        default: 'ml.g4dn.xlarge'
+        default: 'ml.g4dn.4xlarge'  # Updated from ml.g4dn.xlarge to 4xlarge for more memory
         required: false
 
 jobs:
@@ -668,7 +668,7 @@ jobs:
               
               parser.add_argument(
                   "--instance-type",
-                  default="ml.g4dn.xlarge",
+                  default="ml.g4dn.4xlarge",  # Updated from xlarge to 4xlarge
                   help="SageMaker training instance type"
               )
               
@@ -748,7 +748,7 @@ jobs:
         id: finetune
         env:
           SAGEMAKER_ROLE_ARN: ${{ secrets.AWS_SAGEMAKER_ROLE_ARN }}
-          TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.xlarge' }}
+          TRAINING_INSTANCE_TYPE: ${{ github.event.inputs.instance_type || 'ml.g4dn.4xlarge' }}
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
           # Create all required directories in S3 if they don't exist
