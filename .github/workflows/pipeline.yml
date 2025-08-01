@@ -17,7 +17,7 @@ on:
         required: true
       instance_type:
         description: 'SageMaker instance type'
-        default: 'ml.g4dn.4xlarge'  # Updated from ml.g4dn.xlarge to 4xlarge for more memory
+        default: 'ml.g4dn.4xlarge'
         required: false
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.10'  # Updated to Python 3.10
 
       - name: Install Dependencies
         run: |
@@ -347,7 +347,7 @@ jobs:
                   logger.info(f"Arguments: {args}")
 
                   # Import libraries
-                  from transformers import AutoModelForCausalLM, AutoTokenizer, BertTokenizer
+                  from transformers import AutoModelForCausalLM, AutoTokenizer, BertTokenizer, Trainer
                   
                   # Check if the model path exists and what it contains
                   model_path = args.model_name_or_path
@@ -522,6 +522,11 @@ jobs:
                                                       continue  # Skip this example if no suitable text found
                                               
                                               encodings = tokenizer(text, truncation=True, max_length=max_length, padding="max_length")
+                                              
+                                              # Filter out token_type_ids which LlamaForCausalLM doesn't accept
+                                              if 'token_type_ids' in encodings:
+                                                  del encodings['token_type_ids']
+                                                  
                                               example = {key: torch.tensor(val) for key, val in encodings.items()}
                                               self.examples.append(example)
                                           except Exception as e:
@@ -536,6 +541,11 @@ jobs:
                               logger.warning("No examples loaded, creating one dummy example")
                               dummy_text = "This is a dummy example because no valid data was found."
                               encodings = tokenizer(dummy_text, truncation=True, max_length=max_length, padding="max_length")
+                              
+                              # Filter out token_type_ids for the dummy example too
+                              if 'token_type_ids' in encodings:
+                                  del encodings['token_type_ids']
+                                  
                               example = {key: torch.tensor(val) for key, val in encodings.items()}
                               self.examples.append(example)
                       
@@ -552,9 +562,17 @@ jobs:
                   # Import Trainer components
                   from transformers import (
                       TrainingArguments,
-                      Trainer,
                       DataCollatorForLanguageModeling
                   )
+                  
+                  # Custom Trainer class that handles token_type_ids
+                  class CustomTrainer(Trainer):
+                      def compute_loss(self, model, inputs, return_outputs=False):
+                          # Remove token_type_ids from inputs if present
+                          if 'token_type_ids' in inputs:
+                              del inputs['token_type_ids']
+                          
+                          return super().compute_loss(model, inputs, return_outputs)
                   
                   # Set up data collator
                   data_collator = DataCollatorForLanguageModeling(
@@ -574,8 +592,8 @@ jobs:
                       remove_unused_columns=False
                   )
                   
-                  # Initialize trainer
-                  trainer = Trainer(
+                  # Initialize trainer with our custom subclass
+                  trainer = CustomTrainer(
                       model=model,
                       args=training_args,
                       train_dataset=train_dataset,
@@ -615,7 +633,7 @@ jobs:
           # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
           transformers==4.28.1
-          torch==2.0.0
+          torch==2.0.0  # Updated to PyTorch 2.0.0
           accelerate==0.16.0
           peft==0.3.0
           bitsandbytes==0.38.0
@@ -668,7 +686,7 @@ jobs:
               
               parser.add_argument(
                   "--instance-type",
-                  default="ml.g4dn.4xlarge",  # Updated from xlarge to 4xlarge
+                  default="ml.g4dn.4xlarge",
                   help="SageMaker training instance type"
               )
               
@@ -710,8 +728,8 @@ jobs:
                       instance_count=1,
                       role=role,
                       transformers_version='4.28.1',
-                      pytorch_version='2.0.0',
-                      py_version='py310',
+                      pytorch_version='2.0.0',  # Updated to PyTorch 2.0.0
+                      py_version='py310',       # Updated to Python 3.10
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False,
                       environment={
@@ -977,6 +995,11 @@ jobs:
               results = {}
               for prompt in prompts:
                   inputs = tokenizer(prompt, return_tensors="pt")
+                  
+                  # Remove token_type_ids to avoid errors
+                  if 'token_type_ids' in inputs:
+                      del inputs['token_type_ids']
+                      
                   outputs = model.generate(inputs["input_ids"], max_length=50, num_return_sequences=1)
                   response = tokenizer.decode(outputs[0], skip_special_tokens=True)
                   results[prompt] = response
