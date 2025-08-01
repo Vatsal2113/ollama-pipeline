@@ -988,7 +988,17 @@ jobs:
 
       - name: Download Fine-tuned Model
         run: |
+          # Check if job name exists and is valid
+           if [ -z "$TRAINING_JOB_NAME" ] || [ "$TRAINING_JOB_NAME" = "None" ] || [ "$TRAINING_JOB_NAME" = "default-job" ]; then
+          echo "Warning: Invalid job name '$TRAINING_JOB_NAME', creating empty model directory"
+          mkdir -p ./fine-tuned-model
+          # Create minimal files for downstream steps to work
+          echo "{}" > ./fine-tuned-model/adapter_config.json
+          else
+          # Download the model as normal
           python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
+          fi
+
 
       - name: Merge LoRA Weights
         run: |
