@@ -9,11 +9,11 @@ on:
     inputs:
       model_name:
         description: 'Name for the final model'
-        default: 'gpt2-custom'
+        default: 'phi2-custom'
         required: true
       base_model:
         description: 'Base model to fine-tune (Ollama model name)'
-        default: 'llama2'
+        default: 'phi2'  # Changed to phi2 (~2.7B parameters)
         required: true
       instance_type:
         description: 'SageMaker instance type'
@@ -39,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'  # Updated to Python 3.10
+          python-version: '3.10'  # Python 3.10 as requested
 
       - name: Install Dependencies
         run: |
@@ -142,8 +142,8 @@ jobs:
           mkdir -p ./base-model
           
           # Pull the model from Ollama
-          echo "Pulling model ${{ github.event.inputs.base_model || 'llama2' }} from Ollama..."
-          ollama pull ${{ github.event.inputs.base_model || 'llama2' }}
+          echo "Pulling model ${{ github.event.inputs.base_model || 'phi2' }} from Ollama..."
+          ollama pull ${{ github.event.inputs.base_model || 'phi2' }}
           
           # Export the model files from Ollama
           echo "Creating export script..."
@@ -171,7 +171,12 @@ jobs:
           print(f"Ollama models: {result.stdout}")
 
           # Determine model type based on name
-          model_type = "llama" if "llama" in model_name.lower() else "gpt2"
+          if "llama" in model_name.lower():
+              model_type = "llama"
+          elif "phi" in model_name.lower():
+              model_type = "phi"
+          else:
+              model_type = "gpt2"  # default fallback
 
           # Create a basic model_info.json
           model_info = {
@@ -186,14 +191,16 @@ jobs:
           # Create a basic HF-compatible config.json
           config = {
               "model_type": model_type,
-              "architectures": ["LlamaForCausalLM" if model_type == "llama" else "GPT2LMHeadModel"],
+              "architectures": ["PhiForCausalLM" if model_type == "phi" else 
+                               "LlamaForCausalLM" if model_type == "llama" else 
+                               "GPT2LMHeadModel"],
               "vocab_size": 32000,
-              "hidden_size": 4096,
-              "intermediate_size": 11008,
+              "hidden_size": 2560 if model_type == "phi" else 4096,
+              "intermediate_size": 8192 if model_type == "phi" else 11008,
               "num_hidden_layers": 32,
               "num_attention_heads": 32,
               "hidden_act": "silu",
-              "max_position_embeddings": 4096,
+              "max_position_embeddings": 2048 if model_type == "phi" else 4096,
               "initializer_range": 0.02,
               "rms_norm_eps": 1e-6,
               "use_cache": True,
@@ -263,7 +270,7 @@ jobs:
           chmod +x export_model.py
           
           # Export the model
-          python export_model.py "${{ github.event.inputs.base_model || 'llama2' }}" "./base-model"
+          python export_model.py "${{ github.event.inputs.base_model || 'phi2' }}" "./base-model"
 
       - name: Upload Base Model to S3
         env:
@@ -271,12 +278,12 @@ jobs:
         run: |
           # Create the base-models directory in S3 if it doesn't exist
           aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/
-          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/${{ github.event.inputs.base_model || 'llama2' }}/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/${{ github.event.inputs.base_model || 'phi2' }}/
           
           # Upload the base model files to S3
-          aws s3 cp --recursive ./base-model/ s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/
+          aws s3 cp --recursive ./base-model/ s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/
           
-          echo "Base model uploaded to S3: s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/"
+          echo "Base model uploaded to S3: s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/"
 
       - name: Create Training Scripts
         run: |
@@ -328,6 +335,9 @@ jobs:
                   logger.info(f"Python version: {sys.version}")
                   logger.info(f"PyTorch version: {torch.__version__}")
                   
+                  # Set CUDA memory optimization environment variables
+                  os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+                  
                   # Parse arguments
                   parser = argparse.ArgumentParser(description="Train a language model")
                   parser.add_argument("--model_name_or_path", type=str, default="/opt/ml/input/data/model")
@@ -340,6 +350,8 @@ jobs:
                   parser.add_argument("--lora_r", type=int, default=8)
                   parser.add_argument("--lora_alpha", type=int, default=16)
                   parser.add_argument("--lora_dropout", type=float, default=0.05)
+                  parser.add_argument("--fp16", type=str, default='True')
+                  parser.add_argument("--gradient_checkpointing", type=str, default='True')
                   
                   args = parser.parse_args()
                   
@@ -365,15 +377,15 @@ jobs:
                           # Create a basic config.json if it doesn't exist
                           logger.info("Creating a basic config.json file")
                           config = {
-                              "model_type": "llama",
-                              "architectures": ["LlamaForCausalLM"],
+                              "model_type": "phi",
+                              "architectures": ["PhiForCausalLM"],
                               "vocab_size": 32000,
-                              "hidden_size": 4096,
-                              "intermediate_size": 11008,
+                              "hidden_size": 2560,
+                              "intermediate_size": 8192,
                               "num_hidden_layers": 32,
                               "num_attention_heads": 32,
                               "hidden_act": "silu",
-                              "max_position_embeddings": 4096,
+                              "max_position_embeddings": 2048,
                               "initializer_range": 0.02,
                               "rms_norm_eps": 1e-6,
                               "use_cache": True,
@@ -439,20 +451,28 @@ jobs:
                   if tokenizer.pad_token is None:
                       tokenizer.pad_token = tokenizer.eos_token or "[PAD]"
                       
-                  # Load model in 8-bit to save memory
-                  logger.info(f"Loading model from {model_path} in 8-bit")
+                  # Load model with memory optimizations
+                  logger.info(f"Loading model from {model_path} with memory optimizations")
                   try:
+                      # Set 8-bit quantization for reduced memory usage
                       model = AutoModelForCausalLM.from_pretrained(
                           model_path,
                           load_in_8bit=True,
-                          device_map="auto"
+                          device_map="auto",
+                          torch_dtype=torch.float16 if args.fp16.lower() == 'true' else None,
                       )
-                      logger.info("Model loaded successfully in 8-bit mode")
+                      
+                      # Enable gradient checkpointing if requested
+                      if args.gradient_checkpointing.lower() == 'true':
+                          model.gradient_checkpointing_enable()
+                          logger.info("Gradient checkpointing enabled")
+                          
+                      logger.info("Model loaded successfully with optimizations")
                   except Exception as e:
-                      logger.warning(f"Failed to load model in 8-bit mode: {e}")
-                      logger.info("Trying to load model normally")
+                      logger.warning(f"Failed to load model with optimizations: {e}")
+                      logger.info("Trying to load model with minimal settings")
                       model = AutoModelForCausalLM.from_pretrained(model_path)
-                      logger.info("Model loaded successfully in normal mode")
+                      logger.info("Model loaded with minimal settings")
                   
                   # Apply LoRA if enabled
                   if args.use_lora.lower() == 'true':
@@ -464,7 +484,9 @@ jobs:
                           target_modules = []
                           if hasattr(model, "config") and hasattr(model.config, "model_type"):
                               model_type = model.config.model_type.lower()
-                              if "gpt" in model_type:
+                              if "phi" in model_type:
+                                  target_modules = ["q_proj", "k_proj", "v_proj"]
+                              elif "gpt" in model_type:
                                   target_modules = ["c_attn"]
                               elif "llama" in model_type or "mistral" in model_type:
                                   target_modules = ["q_proj", "v_proj"]
@@ -523,7 +545,7 @@ jobs:
                                               
                                               encodings = tokenizer(text, truncation=True, max_length=max_length, padding="max_length")
                                               
-                                              # Filter out token_type_ids which LlamaForCausalLM doesn't accept
+                                              # Filter out token_type_ids which models like Llama/Phi don't accept
                                               if 'token_type_ids' in encodings:
                                                   del encodings['token_type_ids']
                                                   
@@ -589,7 +611,12 @@ jobs:
                       num_train_epochs=args.num_train_epochs,
                       save_strategy="no",  # Don't save intermediate checkpoints
                       logging_steps=1,
-                      remove_unused_columns=False
+                      remove_unused_columns=False,
+                      fp16=args.fp16.lower() == 'true',
+                      gradient_checkpointing=args.gradient_checkpointing.lower() == 'true',
+                      # Additional memory optimizations
+                      optim="adamw_torch",
+                      dataloader_pin_memory=False,
                   )
                   
                   # Initialize trainer with our custom subclass
@@ -633,7 +660,7 @@ jobs:
           # Create requirements.txt file with compatible versions
           cat > ./scripts/training_scripts/lora_trainer/requirements.txt << 'EOF'
           transformers==4.28.1
-          torch==2.0.0  # Updated to PyTorch 2.0.0
+          torch==2.0.0  # PyTorch 2.0.0 as requested
           accelerate==0.16.0
           peft==0.3.0
           bitsandbytes==0.38.0
@@ -702,7 +729,7 @@ jobs:
                   role = os.environ.get("SAGEMAKER_ROLE_ARN")
                   logger.info(f"Using role: {role}")
                   
-                  # Define hyperparameters for fine-tuning
+                  # Define hyperparameters for fine-tuning with memory optimizations
                   hyperparameters = {
                       'model_name_or_path': '/opt/ml/input/data/model',
                       'output_dir': '/opt/ml/model',
@@ -713,7 +740,9 @@ jobs:
                       'use_lora': 'True',
                       'lora_r': 8,
                       'lora_alpha': 16,
-                      'lora_dropout': 0.05
+                      'lora_dropout': 0.05,
+                      'fp16': 'True',                    # Added for memory optimization
+                      'gradient_checkpointing': 'True'   # Added for memory optimization
                   }
                   
                   # Generate a simple job name
@@ -728,13 +757,14 @@ jobs:
                       instance_count=1,
                       role=role,
                       transformers_version='4.28.1',
-                      pytorch_version='2.0.0',  # Updated to PyTorch 2.0.0
-                      py_version='py310',       # Updated to Python 3.10
+                      pytorch_version='2.0.0',  # PyTorch 2.0.0 as requested
+                      py_version='py310',       # Python 3.10 as requested
                       hyperparameters=hyperparameters,
                       debugger_hook_config=False,
                       environment={
-                          'TRANSFORMERS_OFFLINE': '1',  # Force offline mode
-                          'HF_DATASETS_OFFLINE': '1'    # Force offline mode for datasets
+                          'TRANSFORMERS_OFFLINE': '1',             # Force offline mode
+                          'HF_DATASETS_OFFLINE': '1',              # Force offline mode for datasets
+                          'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:128'  # Reduce memory fragmentation
                       }
                   )
                   
@@ -774,7 +804,7 @@ jobs:
           aws s3api put-object --bucket $S3_BUCKET_NAME --key models/
           
           # Define S3 URIs
-          BASE_MODEL_URI="s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'llama2' }}/"
+          BASE_MODEL_URI="s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/"
           TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/training-data/"
           echo "Using base model from: $BASE_MODEL_URI"
           echo "Using training data from: $TRAINING_DATA_URI"
@@ -837,7 +867,7 @@ jobs:
           
           # First we need to download the base model again
           mkdir -p ./base-model
-          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'llama2' }}/ ./base-model/
+          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'phi2' }}/ ./base-model/
           
           # Now merge the weights
           mkdir -p ./merged-model
@@ -913,7 +943,7 @@ jobs:
           # Convert to GGUF
           python ./scripts/convert_to_gguf.py \
             --input-dir ./merged-model \
-            --output-file ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf \
+            --output-file ./models/${{ github.event.inputs.model_name || 'phi2-custom' }}.gguf \
             --outtype q4_k_m
 
       - name: Create Ollama Modelfile
@@ -966,8 +996,8 @@ jobs:
           
           # Create Modelfile
           python ./scripts/create_modelfile.py \
-            --gguf-path ./models/${{ github.event.inputs.model_name || 'gpt2-custom' }}.gguf \
-            --model-name ${{ github.event.inputs.model_name || 'gpt2-custom' }}
+            --gguf-path ./models/${{ github.event.inputs.model_name || 'phi2-custom' }}.gguf \
+            --model-name ${{ github.event.inputs.model_name || 'phi2-custom' }}
 
       - name: Evaluate Model
         id: evaluate
@@ -1048,7 +1078,7 @@ jobs:
         env:
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
-          MODEL_NAME=${{ github.event.inputs.model_name || 'gpt2-custom' }}
+          MODEL_NAME=${{ github.event.inputs.model_name || 'phi2-custom' }}
           
           # Create timestamp for versioning
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
