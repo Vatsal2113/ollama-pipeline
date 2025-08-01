@@ -157,18 +157,25 @@ jobs:
           model_name = sys.argv[1]
           output_dir = sys.argv[2]
           
-          # Get model info from Ollama
-          result = subprocess.run(['ollama', 'show', model_name, '--format', 'json'], 
-                                  capture_output=True, text=True)
+          # Get model info from Ollama using the list command instead
+          result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
           if result.returncode != 0:
-              print(f"Error getting model info: {result.stderr}")
+              print(f"Error listing models: {result.stderr}")
               sys.exit(1)
-              
-          model_info = json.loads(result.stdout)
-          print(f"Model info: {json.dumps(model_info, indent=2)}")
           
-          # Extract the model files to the output directory
+          print(f"Ollama models: {result.stdout}")
+          
+          # Create the output directory
           os.makedirs(output_dir, exist_ok=True)
+          
+          # Determine model type based on name
+          model_type = "llama" if "llama" in model_name.lower() else "gpt2"
+          
+          # Create a basic model_info.json
+          model_info = {
+              "name": model_name,
+              "type": model_type
+          }
           
           # Save model details to a JSON file
           with open(os.path.join(output_dir, "model_info.json"), "w") as f:
@@ -176,8 +183,8 @@ jobs:
           
           # Create a basic HF-compatible config.json
           config = {
-              "model_type": "llama" if "llama" in model_name.lower() else "gpt2",
-              "architectures": ["LlamaForCausalLM" if "llama" in model_name.lower() else "GPT2LMHeadModel"],
+              "model_type": model_type,
+              "architectures": ["LlamaForCausalLM" if model_type == "llama" else "GPT2LMHeadModel"],
               "vocab_size": 32000,
               "hidden_size": 4096,
               "intermediate_size": 11008,
