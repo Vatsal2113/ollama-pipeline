@@ -9,11 +9,11 @@ on:
     inputs:
       model_name:
         description: 'Name for the final model'
-        default: 'phi2-custom'
+        default: 'phi-custom'
         required: true
       base_model:
         description: 'Base model to fine-tune (Ollama model name)'
-        default: 'phi2'  # Changed to phi2 (~2.7B parameters)
+        default: 'phi'  # Changed to phi (valid Ollama model name)
         required: true
       instance_type:
         description: 'SageMaker instance type'
@@ -142,8 +142,8 @@ jobs:
           mkdir -p ./base-model
           
           # Pull the model from Ollama
-          echo "Pulling model ${{ github.event.inputs.base_model || 'phi2' }} from Ollama..."
-          ollama pull ${{ github.event.inputs.base_model || 'phi2' }}
+          echo "Pulling model ${{ github.event.inputs.base_model || 'phi' }} from Ollama..."
+          ollama pull ${{ github.event.inputs.base_model || 'phi' }}
           
           # Export the model files from Ollama
           echo "Creating export script..."
@@ -270,7 +270,7 @@ jobs:
           chmod +x export_model.py
           
           # Export the model
-          python export_model.py "${{ github.event.inputs.base_model || 'phi2' }}" "./base-model"
+          python export_model.py "${{ github.event.inputs.base_model || 'phi' }}" "./base-model"
 
       - name: Upload Base Model to S3
         env:
@@ -278,12 +278,12 @@ jobs:
         run: |
           # Create the base-models directory in S3 if it doesn't exist
           aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/
-          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/${{ github.event.inputs.base_model || 'phi2' }}/
+          aws s3api put-object --bucket $S3_BUCKET_NAME --key base-models/${{ github.event.inputs.base_model || 'phi' }}/
           
           # Upload the base model files to S3
-          aws s3 cp --recursive ./base-model/ s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/
+          aws s3 cp --recursive ./base-model/ s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi' }}/
           
-          echo "Base model uploaded to S3: s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/"
+          echo "Base model uploaded to S3: s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi' }}/"
 
       - name: Create Training Scripts
         run: |
@@ -804,7 +804,7 @@ jobs:
           aws s3api put-object --bucket $S3_BUCKET_NAME --key models/
           
           # Define S3 URIs
-          BASE_MODEL_URI="s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi2' }}/"
+          BASE_MODEL_URI="s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'phi' }}/"
           TRAINING_DATA_URI="s3://${S3_BUCKET_NAME}/training-data/"
           echo "Using base model from: $BASE_MODEL_URI"
           echo "Using training data from: $TRAINING_DATA_URI"
@@ -867,7 +867,7 @@ jobs:
           
           # First we need to download the base model again
           mkdir -p ./base-model
-          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'phi2' }}/ ./base-model/
+          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'phi' }}/ ./base-model/
           
           # Now merge the weights
           mkdir -p ./merged-model
@@ -943,7 +943,7 @@ jobs:
           # Convert to GGUF
           python ./scripts/convert_to_gguf.py \
             --input-dir ./merged-model \
-            --output-file ./models/${{ github.event.inputs.model_name || 'phi2-custom' }}.gguf \
+            --output-file ./models/${{ github.event.inputs.model_name || 'phi-custom' }}.gguf \
             --outtype q4_k_m
 
       - name: Create Ollama Modelfile
@@ -996,8 +996,8 @@ jobs:
           
           # Create Modelfile
           python ./scripts/create_modelfile.py \
-            --gguf-path ./models/${{ github.event.inputs.model_name || 'phi2-custom' }}.gguf \
-            --model-name ${{ github.event.inputs.model_name || 'phi2-custom' }}
+            --gguf-path ./models/${{ github.event.inputs.model_name || 'phi-custom' }}.gguf \
+            --model-name ${{ github.event.inputs.model_name || 'phi-custom' }}
 
       - name: Evaluate Model
         id: evaluate
@@ -1078,7 +1078,7 @@ jobs:
         env:
           S3_BUCKET_NAME: "ollama-lora-pipeline"
         run: |
-          MODEL_NAME=${{ github.event.inputs.model_name || 'phi2-custom' }}
+          MODEL_NAME=${{ github.event.inputs.model_name || 'phi-custom' }}
           
           # Create timestamp for versioning
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
