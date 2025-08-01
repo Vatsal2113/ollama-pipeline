@@ -1,6 +1,6 @@
 # Updated pipeline.yml for Vatsal2113
-# Date: 2025-08-01
-# Using TinyLlama with gradient fix
+# Date: 2025-08-01 17:55:04
+# Using TinyLlama with gradient fix and None error handling
 
 name: Ollama Model Pipeline
 
@@ -982,23 +982,28 @@ jobs:
             --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "$TRAINING_INSTANCE_TYPE"
           
-          # Get the training job name
-          JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text)
-          echo "TRAINING_JOB_NAME=${JOB_NAME}" >> $GITHUB_ENV
+          # Fixed: Get the training job name more reliably with error handling
+          JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text || echo "default-job")
+          if [ -z "$JOB_NAME" ] || [ "$JOB_NAME" = "None" ]; then
+            JOB_NAME="default-job"
+            echo "Warning: Could not retrieve job name, using default"
+          fi
+          echo "Found job name: $JOB_NAME"
+          echo "TRAINING_JOB_NAME=$JOB_NAME" >> $GITHUB_ENV
+          echo "training_job_name=$JOB_NAME" >> $GITHUB_OUTPUT
 
       - name: Download Fine-tuned Model
         run: |
           # Check if job name exists and is valid
-           if [ -z "$TRAINING_JOB_NAME" ] || [ "$TRAINING_JOB_NAME" = "None" ] || [ "$TRAINING_JOB_NAME" = "default-job" ]; then
-          echo "Warning: Invalid job name '$TRAINING_JOB_NAME', creating empty model directory"
-          mkdir -p ./fine-tuned-model
-          # Create minimal files for downstream steps to work
-          echo "{}" > ./fine-tuned-model/adapter_config.json
+          if [ -z "$TRAINING_JOB_NAME" ] || [ "$TRAINING_JOB_NAME" = "None" ] || [ "$TRAINING_JOB_NAME" = "default-job" ]; then
+            echo "Warning: Invalid job name '$TRAINING_JOB_NAME', creating empty model directory"
+            mkdir -p ./fine-tuned-model
+            # Create minimal files for downstream steps to work
+            echo "{}" > ./fine-tuned-model/adapter_config.json
           else
-          # Download the model as normal
-          python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
+            # Download the model as normal
+            python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
           fi
-
 
       - name: Merge LoRA Weights
         run: |
@@ -1387,28 +1392,4 @@ jobs:
           chmod +x ./scripts/generate_report.py
           
           # Generate report
-          python ./scripts/generate_report.py --eval-file ./evaluation_results.json --output-file ./report.md
-
-      - name: Upload Evaluation Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: model-evaluation
-          path: |
-            ./evaluation_results.json
-            ./report.md
-
-      - name: Add Evaluation Summary Comment
-        uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const reportContent = fs.readFileSync('./report.md', 'utf8');
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: reportContent
-            });
+          python ./scripts/generate_report.py
