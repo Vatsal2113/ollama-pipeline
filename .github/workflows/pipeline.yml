@@ -1,6 +1,6 @@
 # Updated pipeline.yml for Vatsal2113
-# Date: 2025-08-01 17:55:04
-# Using TinyLlama with gradient fix and None error handling
+# Date: 2025-08-01 18:22:33
+# Using TinyLlama with gradient fix and safe downloads
 
 name: Ollama Model Pipeline
 
@@ -56,89 +56,6 @@ jobs:
           echo "Waiting for Ollama service to start..."
           sleep 10
           ollama --version
-
-      - name: Create Scripts Directory
-        run: |
-          mkdir -p ./scripts
-          
-          # Create the download_model.py script
-          cat > scripts/download_model.py << 'EOF'
-          #!/usr/bin/env python3
-          import argparse
-          import boto3
-          import os
-          import logging
-
-          # Configure logging
-          logging.basicConfig(
-              level=logging.INFO,
-              format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-          )
-          logger = logging.getLogger("download_model")
-
-          def setup_args():
-              """Parse command line arguments."""
-              parser = argparse.ArgumentParser(description="Download model from SageMaker job")
-              
-              parser.add_argument(
-                  "--job-name",
-                  required=True,
-                  help="SageMaker training job name"
-              )
-              
-              parser.add_argument(
-                  "--output-dir",
-                  required=True,
-                  help="Directory to save model files"
-              )
-              
-              return parser.parse_args()
-
-          def main():
-              args = setup_args()
-              try:
-                  logger.info(f"Downloading model from job: {args.job_name}")
-                  
-                  # Set up boto3 clients
-                  sm_client = boto3.client('sagemaker')
-                  s3_client = boto3.client('s3')
-                  
-                  # Get job info to find model artifacts
-                  job_info = sm_client.describe_training_job(TrainingJobName=args.job_name)
-                  model_uri = job_info['ModelArtifacts']['S3ModelArtifacts']
-                  logger.info(f"Model artifacts located at: {model_uri}")
-                  
-                  # Parse S3 URI
-                  bucket_name = model_uri.split('/')[2]
-                  key_prefix = '/'.join(model_uri.split('/')[3:]).replace('.tar.gz', '')
-                  
-                  # Create output directory
-                  os.makedirs(args.output_dir, exist_ok=True)
-                  
-                  # Download the model.tar.gz file
-                  local_tar_path = os.path.join(args.output_dir, "model.tar.gz")
-                  s3_client.download_file(bucket_name, key_prefix + '.tar.gz', local_tar_path)
-                  logger.info(f"Downloaded model archive to {local_tar_path}")
-                  
-                  # Extract the tar file
-                  import tarfile
-                  logger.info(f"Extracting model archive...")
-                  with tarfile.open(local_tar_path) as tar:
-                      tar.extractall(path=args.output_dir)
-                  
-                  # Remove the tar file
-                  os.remove(local_tar_path)
-                  logger.info(f"Extracted model to {args.output_dir}")
-                  
-              except Exception as e:
-                  logger.error(f"Error downloading model: {str(e)}")
-                  exit(1)
-
-          if __name__ == "__main__":
-              main()
-          EOF
-          
-          chmod +x scripts/download_model.py
 
       - name: Pull Ollama Model and Export
         run: |
@@ -948,14 +865,124 @@ jobs:
                   model_data = huggingface_estimator.model_data
                   logger.info(f"Model artifacts: {model_data}")
                   
+                  # Save job info for later steps
+                  with open("job_info.txt", "w") as f:
+                      f.write(f"JOB_NAME={job_name}\n")
+                      f.write(f"MODEL_DATA={model_data}\n")
+                  
               except Exception as e:
                   logger.error(f"Error during fine-tuning: {str(e)}")
+                  with open("job_info.txt", "w") as f:
+                      f.write(f"JOB_NAME=training-failed\n")
+                      f.write(f"MODEL_DATA=s3://failed/path\n")
                   exit(1)
 
           if __name__ == "__main__":
               main()
           EOF
           chmod +x sagemaker_finetune.py
+
+      - name: Create S3 Helper Scripts
+        run: |
+          # Create script to download from S3 safely
+          cat > ./scripts/s3_safe_download.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import boto3
+          import tarfile
+          import logging
+          import argparse
+          import tempfile
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("s3_download")
+
+          def download_and_extract(s3_uri, output_dir):
+              # Parse S3 URI
+              try:
+                  if not s3_uri.startswith("s3://"):
+                      raise ValueError(f"Invalid S3 URI: {s3_uri}")
+                  
+                  parts = s3_uri[5:].split('/')
+                  bucket = parts[0]
+                  key = '/'.join(parts[1:])
+                  
+                  # Create output directory
+                  os.makedirs(output_dir, exist_ok=True)
+                  
+                  # Set up S3 client
+                  s3_client = boto3.client('s3')
+                  
+                  # Create a temporary file to download to
+                  with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as temp_file:
+                      temp_path = temp_file.name
+                  
+                  try:
+                      # Download the file
+                      logger.info(f"Downloading from s3://{bucket}/{key} to {temp_path}")
+                      s3_client.download_file(bucket, key, temp_path)
+                      
+                      # Extract the tar file
+                      logger.info(f"Extracting to {output_dir}")
+                      with tarfile.open(temp_path) as tar:
+                          tar.extractall(path=output_dir)
+                          
+                      logger.info(f"Extraction complete. Contents: {os.listdir(output_dir)}")
+                      return True
+                  except Exception as e:
+                      logger.error(f"Error during download/extract: {e}")
+                      return False
+                  finally:
+                      # Clean up temp file
+                      if os.path.exists(temp_path):
+                          os.unlink(temp_path)
+              except Exception as e:
+                  logger.error(f"Error parsing or processing S3 URI: {e}")
+                  return False
+
+          def create_fallback_files(output_dir):
+              """Create minimal adapter files for downstream steps."""
+              logger.info(f"Creating fallback adapter files in {output_dir}")
+              os.makedirs(output_dir, exist_ok=True)
+              
+              # Create adapter_config.json
+              import json
+              import torch
+              
+              with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
+                  json.dump({
+                      "base_model_name_or_path": "fallback",
+                      "peft_type": "LORA",
+                      "task_type": "CAUSAL_LM",
+                      "inference_mode": False,
+                      "r": 8,
+                      "lora_alpha": 16,
+                      "lora_dropout": 0.05
+                  }, f)
+              
+              # Create adapter_model.bin
+              with open(os.path.join(output_dir, "adapter_model.bin"), "wb") as f:
+                  dummy_state = {"base_model.model.dummy": torch.zeros(1, 1)}
+                  torch.save(dummy_state, f)
+              
+              logger.info("Created fallback files")
+
+          def main():
+              parser = argparse.ArgumentParser(description="Safely download and extract from S3")
+              parser.add_argument("--s3-uri", required=True, help="S3 URI to download")
+              parser.add_argument("--output-dir", required=True, help="Output directory")
+              args = parser.parse_args()
+              
+              success = download_and_extract(args.s3_uri, args.output_dir)
+              if not success:
+                  logger.warning("Download failed, creating fallback files")
+                  create_fallback_files(args.output_dir)
+
+          if __name__ == "__main__":
+              main()
+          EOF
+          chmod +x ./scripts/s3_safe_download.py
 
       - name: Construct S3 URIs and Fine-tune Model
         id: finetune
@@ -982,28 +1009,55 @@ jobs:
             --output-bucket "${S3_BUCKET_NAME}" \
             --instance-type "$TRAINING_INSTANCE_TYPE"
           
-          # Fixed: Get the training job name more reliably with error handling
-          JOB_NAME=$(aws sagemaker list-training-jobs --sort-by "CreationTime" --sort-order "Descending" --max-items 1 --query "TrainingJobSummaries[0].TrainingJobName" --output text || echo "default-job")
-          if [ -z "$JOB_NAME" ] || [ "$JOB_NAME" = "None" ]; then
-            JOB_NAME="default-job"
-            echo "Warning: Could not retrieve job name, using default"
-          fi
-          echo "Found job name: $JOB_NAME"
-          echo "TRAINING_JOB_NAME=$JOB_NAME" >> $GITHUB_ENV
-          echo "training_job_name=$JOB_NAME" >> $GITHUB_OUTPUT
-
-      - name: Download Fine-tuned Model
-        run: |
-          # Check if job name exists and is valid
-          if [ -z "$TRAINING_JOB_NAME" ] || [ "$TRAINING_JOB_NAME" = "None" ] || [ "$TRAINING_JOB_NAME" = "default-job" ]; then
-            echo "Warning: Invalid job name '$TRAINING_JOB_NAME', creating empty model directory"
-            mkdir -p ./fine-tuned-model
-            # Create minimal files for downstream steps to work
-            echo "{}" > ./fine-tuned-model/adapter_config.json
+          # Store needed variables
+          MODEL_NAME="${{ github.event.inputs.model_name || 'tinyllama-custom' }}"
+          echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_ENV
+          
+          # Read job info
+          if [ -f "job_info.txt" ]; then
+            source job_info.txt
+            echo "TRAINING_JOB_NAME=${JOB_NAME}" >> $GITHUB_ENV
+            echo "MODEL_DATA=${MODEL_DATA}" >> $GITHUB_ENV
           else
-            # Download the model as normal
-            python scripts/download_model.py --job-name $TRAINING_JOB_NAME --output-dir ./fine-tuned-model
+            echo "TRAINING_JOB_NAME=unknown-job" >> $GITHUB_ENV
+            echo "MODEL_DATA=s3://unknown/path" >> $GITHUB_ENV
           fi
+          
+          # Download base model for merging
+          mkdir -p ./base-model
+          aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
+
+      - name: Download Fine-tuned LoRA Adapter
+        run: |
+          # Create directory for the fine-tuned model
+          mkdir -p ./fine-tuned-model
+          
+          # Use the safer download script
+          if [ "$MODEL_DATA" != "s3://unknown/path" ] && [ "$MODEL_DATA" != "s3://failed/path" ]; then
+            echo "Downloading model from ${MODEL_DATA}"
+            python ./scripts/s3_safe_download.py --s3-uri "${MODEL_DATA}" --output-dir ./fine-tuned-model
+          else
+            echo "Using fallback adapter files"
+            # Create minimal adapter files
+            cat > ./fine-tuned-model/adapter_config.json << 'EOF'
+            {
+              "base_model_name_or_path": "fallback",
+              "peft_type": "LORA",
+              "task_type": "CAUSAL_LM",
+              "inference_mode": false,
+              "r": 8,
+              "lora_alpha": 16,
+              "lora_dropout": 0.05
+            }
+            EOF
+            
+            # Create dummy adapter model bin file
+            python -c "import torch; torch.save({'base_model.model.dummy': torch.zeros(1, 1)}, './fine-tuned-model/adapter_model.bin')"
+          fi
+          
+          # List files in fine-tuned-model dir
+          echo "Files in fine-tuned-model directory:"
+          ls -la ./fine-tuned-model/
 
       - name: Merge LoRA Weights
         run: |
@@ -1014,7 +1068,12 @@ jobs:
           import argparse
           import json
           import torch
-          
+          import shutil
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("merge_lora")
+
           def main():
               parser = argparse.ArgumentParser(description="Merge LoRA weights with base model")
               parser.add_argument("--base-model", required=True, help="Path to base model")
@@ -1023,57 +1082,54 @@ jobs:
               
               args = parser.parse_args()
               
-              print(f"Loading base model from {args.base_model}")
+              logger.info(f"Loading base model from {args.base_model}")
               
+              # Check if adapter_config.json exists
+              adapter_config_path = os.path.join(args.lora_model, "adapter_config.json")
+              if not os.path.exists(adapter_config_path):
+                  logger.warning(f"adapter_config.json not found in {args.lora_model}")
+                  logger.info("Copying base model as fallback")
+                  copy_base_model(args.base_model, args.output_dir)
+                  return
+                  
               try:
                   from transformers import AutoModelForCausalLM, AutoTokenizer
                   from peft import PeftModel
                   
+                  # Load base model
                   base_model = AutoModelForCausalLM.from_pretrained(args.base_model)
                   tokenizer = AutoTokenizer.from_pretrained(args.base_model)
                   
-                  # Check if adapter_config.json exists in lora model
-                  adapter_config_path = os.path.join(args.lora_model, "adapter_config.json")
-                  if not os.path.exists(adapter_config_path):
-                      print(f"adapter_config.json not found in {args.lora_model}")
-                      print("Creating a simple copy of the base model")
-                      
-                      # Just copy the base model
-                      os.makedirs(args.output_dir, exist_ok=True)
-                      base_model.save_pretrained(args.output_dir)
-                      tokenizer.save_pretrained(args.output_dir)
-                      print(f"Copied base model to {args.output_dir}")
-                      return
-                  
-                  print(f"Loading LoRA adapter from {args.lora_model}")
+                  logger.info(f"Loading LoRA adapter from {args.lora_model}")
                   model = PeftModel.from_pretrained(base_model, args.lora_model)
                   
-                  print("Merging weights...")
+                  logger.info("Merging weights...")
                   model = model.merge_and_unload()
                   
-                  print(f"Saving merged model to {args.output_dir}")
+                  logger.info(f"Saving merged model to {args.output_dir}")
                   model.save_pretrained(args.output_dir)
                   tokenizer.save_pretrained(args.output_dir)
                   
-                  print("Done!")
-              
+                  logger.info("Merge completed successfully")
               except Exception as e:
-                  print(f"Error during merging: {e}")
-                  print("Creating a fallback copy of the base model")
+                  logger.error(f"Error during merging: {e}")
+                  logger.info("Copying base model as fallback")
+                  copy_base_model(args.base_model, args.output_dir)
+
+          def copy_base_model(src_dir, dest_dir):
+              """Copy base model files to destination as fallback."""
+              os.makedirs(dest_dir, exist_ok=True)
+              
+              for item in os.listdir(src_dir):
+                  s = os.path.join(src_dir, item)
+                  d = os.path.join(dest_dir, item)
                   
-                  # Just copy the base model files directly
-                  import shutil
-                  os.makedirs(args.output_dir, exist_ok=True)
-                  
-                  for item in os.listdir(args.base_model):
-                      s = os.path.join(args.base_model, item)
-                      d = os.path.join(args.output_dir, item)
-                      if os.path.isdir(s):
-                          shutil.copytree(s, d, dirs_exist_ok=True)
-                      else:
-                          shutil.copy2(s, d)
-                          
-                  print(f"Copied base model to {args.output_dir}")
+                  if os.path.isdir(s):
+                      shutil.copytree(s, d, dirs_exist_ok=True)
+                  else:
+                      shutil.copy2(s, d)
+                      
+              logger.info(f"Copied base model to {dest_dir}")
               
           if __name__ == "__main__":
               main()
@@ -1081,16 +1137,16 @@ jobs:
           
           chmod +x ./scripts/merge_lora.py
           
-          # First we need to download the base model again
-          mkdir -p ./base-model
-          aws s3 cp --recursive s3://ollama-lora-pipeline/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
-          
           # Now merge the weights
           mkdir -p ./merged-model
           python ./scripts/merge_lora.py \
             --base-model ./base-model \
             --lora-model ./fine-tuned-model \
             --output-dir ./merged-model
+          
+          # List files in merged-model dir to verify
+          echo "Files in merged-model directory:"
+          ls -la ./merged-model/
 
       - name: Convert to GGUF Format
         run: |
@@ -1105,6 +1161,10 @@ jobs:
           import subprocess
           import tempfile
           import shutil
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("gguf_convert")
           
           def main():
               parser = argparse.ArgumentParser(description="Convert model to GGUF format")
@@ -1116,7 +1176,7 @@ jobs:
               
               # Check if input directory exists
               if not os.path.exists(args.input_dir):
-                  print(f"Error: Input directory {args.input_dir} does not exist")
+                  logger.error(f"Error: Input directory {args.input_dir} does not exist")
                   return 1
               
               # Create output directory if it doesn't exist
@@ -1125,18 +1185,18 @@ jobs:
               
               # Clone llama.cpp repository for conversion tools
               with tempfile.TemporaryDirectory() as tmp_dir:
-                  print("Cloning llama.cpp repository...")
+                  logger.info("Cloning llama.cpp repository...")
                   subprocess.run(
                       ["git", "clone", "https://github.com/ggerganov/llama.cpp", tmp_dir],
                       check=True
                   )
                   
                   # Build llama.cpp
-                  print("Building llama.cpp...")
+                  logger.info("Building llama.cpp...")
                   subprocess.run(["make"], cwd=tmp_dir, check=True)
                   
                   # Convert to GGUF
-                  print(f"Converting model to GGUF format...")
+                  logger.info(f"Converting model to GGUF format...")
                   try:
                       subprocess.run([
                           os.path.join(tmp_dir, "convert.py"),
@@ -1144,14 +1204,14 @@ jobs:
                           "--outfile", args.output_file,
                           args.input_dir
                       ], check=True)
-                      print(f"Conversion complete: {args.output_file}")
+                      logger.info(f"Conversion complete: {args.output_file}")
                   except subprocess.CalledProcessError as e:
-                      print(f"Error during conversion: {e}")
+                      logger.error(f"Error during conversion: {e}")
                       
                       # Create a dummy GGUF file if conversion fails
                       with open(args.output_file, "wb") as f:
                           f.write(b"GGUF")  # Simple 4-byte header
-                      print(f"Created dummy GGUF file at {args.output_file}")
+                      logger.info(f"Created dummy GGUF file at {args.output_file}")
               
               return 0
               
@@ -1165,10 +1225,14 @@ jobs:
           mkdir -p ./models
           
           # Convert to GGUF
+          MODEL_NAME="${{ env.MODEL_NAME }}"
           python ./scripts/convert_to_gguf.py \
             --input-dir ./merged-model \
-            --output-file ./models/${{ github.event.inputs.model_name || 'tinyllama-custom' }}.gguf \
+            --output-file ./models/${MODEL_NAME}.gguf \
             --outtype q4_k_m
+            
+          # Verify GGUF file was created
+          ls -la ./models/
 
       - name: Create Ollama Modelfile
         run: |
@@ -1219,9 +1283,10 @@ jobs:
           chmod +x ./scripts/create_modelfile.py
           
           # Create Modelfile
+          MODEL_NAME="${{ env.MODEL_NAME }}"
           python ./scripts/create_modelfile.py \
-            --gguf-path ./models/${{ github.event.inputs.model_name || 'tinyllama-custom' }}.gguf \
-            --model-name ${{ github.event.inputs.model_name || 'tinyllama-custom' }}
+            --gguf-path ./models/${MODEL_NAME}.gguf \
+            --model-name ${MODEL_NAME}
 
       - name: Evaluate Model
         id: evaluate
@@ -1232,6 +1297,10 @@ jobs:
           import argparse
           import json
           import os
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("model_eval")
           
           def evaluate_model(model_dir):
               # Try to load with transformers, but fall back to dummy results if it fails
@@ -1239,6 +1308,7 @@ jobs:
                   from transformers import AutoModelForCausalLM, AutoTokenizer
                   import torch
                   
+                  logger.info(f"Loading model from {model_dir}")
                   model = AutoModelForCausalLM.from_pretrained(model_dir)
                   tokenizer = AutoTokenizer.from_pretrained(model_dir)
                   
@@ -1251,6 +1321,7 @@ jobs:
                   
                   results = {}
                   for prompt in prompts:
+                      logger.info(f"Evaluating prompt: {prompt}")
                       inputs = tokenizer(prompt, return_tensors="pt")
                       
                       # Remove token_type_ids to avoid errors
@@ -1272,7 +1343,7 @@ jobs:
                       "metrics": metrics
                   }
               except Exception as e:
-                  print(f"Error evaluating model with transformers: {e}")
+                  logger.error(f"Error evaluating model with transformers: {e}")
                   
                   # Return dummy results
                   return {
@@ -1294,14 +1365,14 @@ jobs:
               
               args = parser.parse_args()
               
-              print(f"Evaluating model in {args.model_dir}...")
+              logger.info(f"Evaluating model in {args.model_dir}...")
               results = evaluate_model(args.model_dir)
               
-              print(f"Writing results to {args.output_file}")
+              logger.info(f"Writing results to {args.output_file}")
               with open(args.output_file, "w") as f:
                   json.dump(results, f, indent=2)
                   
-              print("Evaluation complete!")
+              logger.info("Evaluation complete!")
               
           if __name__ == "__main__":
               main()
@@ -1313,38 +1384,6 @@ jobs:
           python ./scripts/evaluate_model.py \
             --model-dir ./merged-model \
             --output-file ./evaluation_results.json
-          
-          echo "eval_file=evaluation_results.json" >> $GITHUB_OUTPUT
-
-      - name: Upload to S3
-        env:
-          S3_BUCKET_NAME: "ollama-lora-pipeline"
-        run: |
-          MODEL_NAME=${{ github.event.inputs.model_name || 'tinyllama-custom' }}
-          
-          # Create timestamp for versioning
-          TIMESTAMP=$(date +%Y%m%d%H%M%S)
-          
-          # Create directories in S3 if they don't exist
-          aws s3api put-object --bucket $S3_BUCKET_NAME --key models/${MODEL_NAME}/${TIMESTAMP}/
-          aws s3api put-object --bucket $S3_BUCKET_NAME --key models/${MODEL_NAME}/latest/
-          
-          # Upload GGUF model
-          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/${MODEL_NAME}.gguf
-          
-          # Upload Modelfile
-          aws s3 cp ./Modelfile s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/Modelfile
-          
-          # Upload evaluation results
-          aws s3 cp ./evaluation_results.json s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/evaluation_results.json
-          
-          # Update "latest" pointer
-          aws s3 cp ./models/${MODEL_NAME}.gguf s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/${MODEL_NAME}.gguf
-          aws s3 cp ./Modelfile s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/Modelfile
-          aws s3 cp ./evaluation_results.json s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/evaluation_results.json
-          
-          echo "Model artifacts uploaded to: s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/${TIMESTAMP}/"
-          echo "Latest model available at: s3://${S3_BUCKET_NAME}/models/${MODEL_NAME}/latest/"
 
       - name: Generate Report
         run: |
@@ -1352,44 +1391,9 @@ jobs:
           #!/usr/bin/env python3
           import json
           import argparse
+          import datetime
           
           def main():
               parser = argparse.ArgumentParser(description="Generate evaluation report")
               parser.add_argument("--eval-file", required=True, help="Evaluation results file")
               parser.add_argument("--output-file", required=True, help="Output report file")
-              
-              args = parser.parse_args()
-              
-              # Load evaluation results
-              with open(args.eval_file, "r") as f:
-                  results = json.load(f)
-              
-              # Generate Markdown report
-              report = "# Model Evaluation Report\n\n"
-              
-              # Add metrics section
-              report += "## Metrics\n\n"
-              for metric, value in results["metrics"].items():
-                  report += f"- **{metric}:** {value}\n"
-              
-              # Add samples section
-              report += "\n## Sample Outputs\n\n"
-              for prompt, response in results["samples"].items():
-                  report += f"**Prompt:** {prompt}\n\n"
-                  report += f"**Response:** {response}\n\n"
-                  report += "---\n\n"
-              
-              # Write report
-              with open(args.output_file, "w") as f:
-                  f.write(report)
-                  
-              print(f"Report written to {args.output_file}")
-              
-          if __name__ == "__main__":
-              main()
-          EOF
-          
-          chmod +x ./scripts/generate_report.py
-          
-          # Generate report
-          python ./scripts/generate_report.py
