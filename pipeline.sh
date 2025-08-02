@@ -1,71 +1,67 @@
 #!/bin/bash
 set -e
 
-# Configuration
-S3_BUCKET=${S3_BUCKET:-"ollama-lora-pipeline"}
-MODELS_TO_PULL=${MODELS_TO_PULL:-"llama2 mistral"}
-OUTPUT_DIR=${OUTPUT_DIR:-"./models"}
-FINETUNE_MODEL=${FINETUNE_MODEL:-""}  # Set to model name to enable finetuning
-TRAINING_DATA=${TRAINING_DATA:-""}    # S3 path to training data
-
-echo "Starting Ollama pipeline at $(date)"
-
-# Check if ollama is running
-if ! curl -s http://localhost:11434/api/version > /dev/null; then
-    echo "Error: Ollama service is not running. Please start Ollama first."
-    exit 1
+# Enable debug mode if requested
+if [ "$DEBUG" = "true" ]; then
+  set -x
 fi
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR/modelfiles"
+echo "Ollama Pipeline starting at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+echo "User: Vatsal2113"
 
-# Check AWS configuration
-if ! aws sts get-caller-identity > /dev/null 2>&1; then
-    echo "Error: AWS credentials not configured correctly"
+# Check for required environment variables
+for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION S3_BUCKET SAGEMAKER_ROLE_ARN; do
+  if [ -z "${!var}" ]; then
+    echo "Error: $var environment variable is not set"
     exit 1
-fi
-
-# Pull models
-for model in $MODELS_TO_PULL; do
-    echo "Pulling model: $model"
-    ollama pull $model || {
-        echo "Error: Failed to pull model $model"
-        exit 1
-    }
-    
-    # Extract modelfile
-    echo "Extracting modelfile for $model"
-    ollama show $model --modelfile > "$OUTPUT_DIR/modelfiles/$model.modelfile" || {
-        echo "Error: Failed to extract modelfile for $model"
-    }
+  fi
 done
 
-# Extract GGUF files
-echo "Extracting GGUF files"
-python3 extract_gguf.py --output "$OUTPUT_DIR" || {
-    echo "Error: Failed to extract GGUF files"
-    exit 1
+# Verify AWS credentials work
+echo "Verifying AWS credentials..."
+aws sts get-caller-identity || {
+  echo "Error: Failed to authenticate with AWS. Check your credentials."
+  exit 1
 }
 
-# Upload to S3
-echo "Uploading to S3"
-aws s3 sync "$OUTPUT_DIR" "s3://$S3_BUCKET/" || {
-    echo "Error: Failed to upload to S3"
-    exit 1
-}
-
-# Run finetuning if requested
-if [ -n "$FINETUNE_MODEL" ] && [ -n "$TRAINING_DATA" ]; then
-    echo "Starting finetuning for model: $FINETUNE_MODEL"
-    python3 sagemaker_finetune.py \
-        --s3-bucket "$S3_BUCKET" \
-        --base-model "$FINETUNE_MODEL" \
-        --training-data "$TRAINING_DATA" \
-        --output-path "s3://$S3_BUCKET/finetuned-models/" || {
-        echo "Error: Finetuning failed"
-        exit 1
+# Pull required models for Ollama (if MODELS_TO_PULL is set)
+if [ -n "$MODELS_TO_PULL" ]; then
+  echo "Pulling Ollama models: $MODELS_TO_PULL"
+  # Check if curl is installed
+  if ! command -v curl &> /dev/null; then
+    echo "Warning: curl is not installed. Installing curl..."
+    apt-get update && apt-get install -y curl
+  fi
+  
+  for model in $MODELS_TO_PULL; do
+    echo "Pulling $model..."
+    curl -X POST http://ollama:11434/api/pull -d "{\"name\":\"$model\"}" || {
+      echo "Warning: Failed to pull model $model. Continuing..."
     }
+  done
 fi
 
-echo "Pipeline completed successfully at $(date)"
+# Run fine-tuning with SageMaker
+if [ -n "$FINETUNE_MODEL" ]; then
+  echo "Setting up fine-tuning for $FINETUNE_MODEL..."
+  
+  # Create sample training data if needed
+  if [ "$CREATE_SAMPLE_DATA" = "true" ]; then
+    echo "Creating sample training data..."
+    mkdir -p /tmp/training_data
+    echo '{"prompt": "What is machine learning?", "completion": "Machine learning is a branch of AI that allows systems to learn and improve from experience."}' > /tmp/training_data/sample.jsonl
+    aws s3 cp /tmp/training_data/ s3://$S3_BUCKET/training-data/ --recursive
+  fi
+  
+  # Run the fine-tuning script
+  echo "Starting SageMaker fine-tuning..."
+  python3 sagemaker_finetune.py \
+    --base-model "$FINETUNE_MODEL" \
+    --training-data "$TRAINING_DATA" \
+    --output-bucket "$S3_BUCKET" \
+    --instance-type "ml.g4dn.xlarge"
+  
+  echo "Fine-tuning complete!"
+fi
+
+echo "Pipeline completed at $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
