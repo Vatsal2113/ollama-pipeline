@@ -1123,60 +1123,59 @@ jobs:
         run: |
           set -euo pipefail
           pip install llama-cpp-python          # provides torch & gguf deps
-      
-          # Write conversion helper
-            cat > scripts/convert_to_gguf.py <<'EOF'
-          #!/usr/bin/env python3
-          import os, argparse, subprocess, tempfile, logging, sys
           
-          logging.basicConfig(level=logging.INFO)
-          log = logging.getLogger("gguf_convert")
+              # Write conversion helper
+          cat > scripts/convert_to_gguf.py <<'EOF'
+              #!/usr/bin/env python3
+              import os, argparse, subprocess, tempfile, logging, sys
+              
+              logging.basicConfig(level=logging.INFO)
+              log = logging.getLogger("gguf_convert")
+            
+            def main():
+                p = argparse.ArgumentParser()
+                p.add_argument("--input-dir", required=True)
+                p.add_argument("--output-file", required=True)
+                p.add_argument("--outtype", default="q4_k_m")
+                a = p.parse_args()
+            
+                if not os.path.isdir(a.input_dir):
+                    log.error("Input dir %s not found", a.input_dir); return 1
+                os.makedirs(os.path.dirname(a.output_file), exist_ok=True)
+            
+                with tempfile.TemporaryDirectory() as tmp:
+                    log.info("Cloning llama.cpp …")
+                    subprocess.run(["git","clone","https://github.com/ggerganov/llama.cpp", tmp], check=True)
+            
+                    # No compilation needed – run the Python converter
+                    log.info("Running Python convert.py → GGUF")
+                    try:
+                        subprocess.run([
+                            sys.executable,
+                            os.path.join(tmp,"convert.py"),
+                            "--outtype", a.outtype,
+                            "--outfile", a.output_file,
+                            a.input_dir
+                        ], check=True)
+                    except subprocess.CalledProcessError as e:
+                        log.error("convert.py failed (%s); writing dummy GGUF", e)
+                        open(a.output_file,"wb").write(b"GGUF")
+                log.info("GGUF written to %s", a.output_file)
+                return 0
+            
+            if __name__ == "__main__":
+                sys.exit(main())
+            EOF
+                chmod +x scripts/convert_to_gguf.py
+            
+                mkdir -p models
+                python scripts/convert_to_gguf.py \
+                  --input-dir merged-model \
+                  --output-file "models/${{ env.MODEL_NAME }}.gguf" \
+                  --outtype q4_k_m
+            
+                ls -la models
         
-        def main():
-            p = argparse.ArgumentParser()
-            p.add_argument("--input-dir", required=True)
-            p.add_argument("--output-file", required=True)
-            p.add_argument("--outtype", default="q4_k_m")
-            a = p.parse_args()
-        
-            if not os.path.isdir(a.input_dir):
-                log.error("Input dir %s not found", a.input_dir); return 1
-            os.makedirs(os.path.dirname(a.output_file), exist_ok=True)
-        
-            with tempfile.TemporaryDirectory() as tmp:
-                log.info("Cloning llama.cpp …")
-                subprocess.run(["git","clone","https://github.com/ggerganov/llama.cpp", tmp], check=True)
-        
-                # No compilation needed – run the Python converter
-                log.info("Running Python convert.py → GGUF")
-                try:
-                    subprocess.run([
-                        sys.executable,
-                        os.path.join(tmp,"convert.py"),
-                        "--outtype", a.outtype,
-                        "--outfile", a.output_file,
-                        a.input_dir
-                    ], check=True)
-                except subprocess.CalledProcessError as e:
-                    log.error("convert.py failed (%s); writing dummy GGUF", e)
-                    open(a.output_file,"wb").write(b"GGUF")
-            log.info("GGUF written to %s", a.output_file)
-            return 0
-        
-        if __name__ == "__main__":
-            sys.exit(main())
-        EOF
-            chmod +x scripts/convert_to_gguf.py
-        
-            mkdir -p models
-            python scripts/convert_to_gguf.py \
-              --input-dir merged-model \
-              --output-file "models/${{ env.MODEL_NAME }}.gguf" \
-              --outtype q4_k_m
-        
-            ls -la models
-      
-
       - name: Create Ollama Modelfile
         run: |
           # Create modelfile creation script
