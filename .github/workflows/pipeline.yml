@@ -1027,12 +1027,11 @@ jobs:
           # Download base model for merging
           mkdir -p ./base-model
           aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
-    
       
-          - name: Download adapter and merge LoRA weights
-            env:
-              MODEL_DATA: ${{ env.MODEL_DATA }}          # set in the previous step
-            run: |
+      - name: Download adapter and merge LoRA weights
+        env:
+          MODEL_DATA: ${{ env.MODEL_DATA }}          # set in the previous step
+        run: |
       
           # -------------------------------------------------------------------
           # 1. Get the fine-tuned LoRA adapter (or create fallback files)
