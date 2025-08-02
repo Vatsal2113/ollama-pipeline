@@ -1028,19 +1028,20 @@ jobs:
           mkdir -p ./base-model
           aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
     
-          - name: Download Fine-tuned LoRA Adapter
-            run: |
-              mkdir -p fine-tuned-model
-          
-              if [[ "$MODEL_DATA" != "s3://unknown/path" && "$MODEL_DATA" != "s3://failed/path" ]]; then
-                echo "Downloading model from $MODEL_DATA"
-                python scripts/s3_safe_download.py --s3-uri "$MODEL_DATA" --output-dir fine-tuned-model
-              else
-                echo "Using fallback adapter files"
-          
-                # ── heredoc: CLOSE EOF FLUSH-LEFT ─────────────────────────
-                cat > fine-tuned-model/adapter_config.json <<'EOF'
-            {
+      - name: Download Fine-tuned LoRA Adapter
+        run: |
+          mkdir -p fine-tuned-model
+      
+          # Use the safer download script
+          if [[ "$MODEL_DATA" != "s3://unknown/path" && "$MODEL_DATA" != "s3://failed/path" ]]; then
+            echo "Downloading model from $MODEL_DATA"
+            python scripts/s3_safe_download.py --s3-uri "$MODEL_DATA" --output-dir fine-tuned-model
+          else
+            echo "Using fallback adapter files"
+      
+            # ----------------  heredoc: NO indentation before EOF  ----------------
+              cat >fine-tuned-model/adapter_config.json <<'EOF'
+             {
             "base_model_name_or_path": "fallback",
             "peft_type": "LORA",
             "task_type": "CAUSAL_LM",
@@ -1048,20 +1049,22 @@ jobs:
             "r": 8,
             "lora_alpha": 16,
             "lora_dropout": 0.05
-            }
-            EOF
-                # create dummy weights so later steps do not crash
+           }
+           EOF
+              # ---------------------------------------------------------------------
+        
+              # dummy weights so later steps do not fail
                 python - <<'PY'
-            import torch, pathlib
-            pathlib.Path("fine-tuned-model").mkdir(exist_ok=True)
-            torch.save({'base_model.model.dummy': torch.zeros(1,1)},
-                      "fine-tuned-model/adapter_model.bin")
-            PY
-                fi   # ← closes the if/else
-            
-                echo "Files in fine-tuned-model directory:"
-                ls -la fine-tuned-model
-         
+          import torch, pathlib
+          pathlib.Path("fine-tuned-model").mkdir(exist_ok=True)
+          torch.save({'base_model.model.dummy': torch.zeros(1,1)},
+                    "fine-tuned-model/adapter_model.bin")
+          PY
+            fi
+        
+            echo "Files in fine-tuned-model directory:"
+            ls -la fine-tuned-model
+
       - name: Merge LoRA Weights
         run: |
           # Create a script to merge LoRA weights
