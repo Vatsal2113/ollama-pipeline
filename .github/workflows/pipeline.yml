@@ -1050,7 +1050,7 @@ jobs:
               "lora_alpha": 16,
               "lora_dropout": 0.05
             }
-            EOF
+EOF
             
             # Create dummy adapter model bin file
             python -c "import torch; torch.save({'base_model.model.dummy': torch.zeros(1, 1)}, './fine-tuned-model/adapter_model.bin')"

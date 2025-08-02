@@ -80,7 +80,7 @@ def main():
             role=role,
             transformers_version='4.28.1',  # Compatible with Python 3.11
             pytorch_version>='1.13.1',        # Compatible with Python 3.11
-            py_version='py39',             # Using Python 3.11 as requested
+            py_version='py310',             # Using Python 3.11 as requested
             hyperparameters=hyperparameters,
             debugger_hook_config=False
         )
