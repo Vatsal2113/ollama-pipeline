@@ -1051,11 +1051,6 @@ jobs:
               "lora_dropout": 0.05
             }
           EOF 
-          python - <<'PY'
-	 import torch, pathlib
-	pathlib.Path("fine-tuned-model").mkdir(exist_ok=True)
-	torch.save({'base_model.model.dummy': torch.zeros(1,1)},"fine-tuned-model/adapter_model.bin")
-        PY
           fi         
           # List files in fine-tuned-model dir
           echo "Files in fine-tuned-model directory:"
