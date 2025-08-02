@@ -1,5 +1,6 @@
 # Updated pipeline.yml for Vatsal2113
-# Date: 2025-08-01 21:01:16
+# Date: 2025-08-01 21:59:52
+# Author: Vatsal2113
 # Using TinyLlama with gradient fix and safe downloads
 
 name: Ollama Model Pipeline
@@ -1410,5 +1411,3 @@ jobs:
               
               # Add metrics section
               report += "## Metrics\n\n"
-              for metric, value in results["metrics"].items():
-                  report += f"- **{metric}:** {value}\n"
