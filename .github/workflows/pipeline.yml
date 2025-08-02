@@ -1031,8 +1031,7 @@ jobs:
       - name: Download Fine-tuned LoRA Adapter
         shell: bash 
         run: |
-          set -euo pipefail
-	  # Create directory for the fine-tuned model
+          	  # Create directory for the fine-tuned model
           mkdir -p ./fine-tuned-model
           
           # Use the safer download script
