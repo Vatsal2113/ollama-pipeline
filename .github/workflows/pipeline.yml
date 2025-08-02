@@ -1029,7 +1029,7 @@ jobs:
           aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
 
       - name: Download Fine-tuned LoRA Adapter
-        shell: bash 
+        
         run: |
           	  # Create directory for the fine-tuned model
           mkdir -p ./fine-tuned-model
