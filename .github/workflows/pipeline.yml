@@ -1029,109 +1029,95 @@ jobs:
           aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
       
       - name: Download adapter and merge LoRA weights
+        shell: bash
         env:
-          MODEL_DATA: ${{ env.MODEL_DATA }}          # set in the previous step
+          MODEL_DATA: ${{ env.MODEL_DATA }}   # set in previous step
         run: |
+          set -euo pipefail
       
-          # -------------------------------------------------------------------
-          # 1. Get the fine-tuned LoRA adapter (or create fallback files)
-          # -------------------------------------------------------------------
-                mkdir -p fine-tuned-model
+          mkdir -p fine-tuned-model
+      
+          # ───── download adapter or create fallback ─────
+          if [[ "$MODEL_DATA" != "s3://unknown/path" && "$MODEL_DATA" != "s3://failed/path" ]]; then
+            echo "Downloading LoRA adapter from $MODEL_DATA"
+            python scripts/s3_safe_download.py --s3-uri "$MODEL_DATA" --output-dir fine-tuned-model
+          else
+            echo "Adapter unavailable – writing fallback files"
+            python - <<'PY'
+          import json, pathlib, torch
+          out = pathlib.Path("fine-tuned-model"); out.mkdir(exist_ok=True)
+          json.dump({
+            "base_model_name_or_path": "fallback",
+            "peft_type": "LORA",
+            "task_type": "CAUSAL_LM",
+            "inference_mode": False,
+            "r": 8,
+            "lora_alpha": 16,
+            "lora_dropout": 0.05
+          }, open(out / "adapter_config.json", "w"), indent=2)
+          torch.save({'base_model.model.dummy': torch.zeros(1, 1)}, out / "adapter_model.bin")
+          PY
+            fi
+      
+            echo "Adapter directory:"
+            ls -la fine-tuned-model
         
-                if [[ "$MODEL_DATA" != "s3://unknown/path" && "$MODEL_DATA" != "s3://failed/path" ]]; then
-                  echo "Downloading adapter from $MODEL_DATA"
-                  python scripts/s3_safe_download.py --s3-uri "$MODEL_DATA" --output-dir fine-tuned-model
-                else
-                  echo "Adapter unavailable – using fallback"
-                  # minimal adapter_config.json
-                  cat > fine-tuned-model/adapter_config.json <<'EOF'
-            {
-              "base_model_name_or_path": "fallback",
-              "peft_type": "LORA",
-              "task_type": "CAUSAL_LM",
-              "inference_mode": false,
-              "r": 8,
-              "lora_alpha": 16,
-              "lora_dropout": 0.05
-            }
-            EOF
-                  python - <<'PY'
-            import torch, pathlib
-            pathlib.Path("fine-tuned-model").mkdir(exist_ok=True)
-            torch.save({'base_model.model.dummy': torch.zeros(1,1)},
-                      "fine-tuned-model/adapter_model.bin")
-            PY
-                fi
-            
-                echo "Adapter contents:"
-                ls -la fine-tuned-model
-            
-                # -------------------------------------------------------------------
-                # 2. Write merge_lora.py (unchanged from your snippet)
-                # -------------------------------------------------------------------
-                mkdir -p scripts
-                cat > scripts/merge_lora.py <<'PY'
-            #!/usr/bin/env python3
-            import os, argparse, shutil, logging
-            logging.basicConfig(level=logging.INFO)
-            logger = logging.getLogger("merge_lora")
-            
-            def copy_base(src, dst):
-                os.makedirs(dst, exist_ok=True)
-                for item in os.listdir(src):
-                    s, d = os.path.join(src, item), os.path.join(dst, item)
-                    shutil.copytree(s, d, dirs_exist_ok=True) if os.path.isdir(s) else shutil.copy2(s, d)
-                logger.info("Copied base model to %s", dst)
-            
-            def main():
-                p = argparse.ArgumentParser()
-                p.add_argument("--base-model", required=True)
-                p.add_argument("--lora-model", required=True)
-                p.add_argument("--output-dir", required=True)
-                a = p.parse_args()
-            
-                adapter_cfg = os.path.join(a.lora_model, "adapter_config.json")
-                if not os.path.exists(adapter_cfg):
-                    logger.warning("No adapter_config.json – using base model only")
-                    copy_base(a.base_model, a.output_dir)
-                    return
-            
-                try:
-                    from transformers import AutoModelForCausalLM, AutoTokenizer
-                    from peft import PeftModel
-            
-                    base = AutoModelForCausalLM.from_pretrained(a.base_model, local_files_only=True)
-                    tok  = AutoTokenizer.from_pretrained(a.base_model, local_files_only=True)
-            
-                    logger.info("Loading LoRA adapter from %s", a.lora_model)
-                    model = PeftModel.from_pretrained(base, a.lora_model).merge_and_unload()
-            
-                    model.save_pretrained(a.output_dir)
-                    tok.save_pretrained(a.output_dir)
-                    logger.info("Merged model saved to %s", a.output_dir)
-                except Exception as e:
-                    logger.error("Merge failed: %s", e)
-                    logger.info("Falling back to base model")
-                    copy_base(a.base_model, a.output_dir)
-            
-            if __name__ == "__main__":
-                main()
-            PY
-                chmod +x scripts/merge_lora.py
-            
-                # -------------------------------------------------------------------
-                # 3. Merge (or copy) into ./merged-model
-                # -------------------------------------------------------------------
-                mkdir -p merged-model
-                scripts/merge_lora.py \
-                  --base-model  base-model \
-                  --lora-model  fine-tuned-model \
-                  --output-dir  merged-model
-            
-                echo "Merged model contents:"
-                ls -la merged-model
+          # ───── write merge_lora.py (same logic as yours) ─────
+            mkdir -p scripts
+              cat > scripts/merge_lora.py <<'PY'
+          #!/usr/bin/env python3
+          import os, argparse, shutil, logging
+          logging.basicConfig(level=logging.INFO)
+          log = logging.getLogger("merge_lora")
+          
+          def copy_dir(src, dst):
+              os.makedirs(dst, exist_ok=True)
+              for item in os.listdir(src):
+                  s, d = os.path.join(src, item), os.path.join(dst, item)
+                  shutil.copytree(s, d, dirs_exist_ok=True) if os.path.isdir(s) else shutil.copy2(s, d)
+          
+          def main():
+              p = argparse.ArgumentParser()
+              p.add_argument("--base-model", required=True)
+              p.add_argument("--lora-model", required=True)
+              p.add_argument("--output-dir", required=True)
+              a = p.parse_args()
+          
+              if not os.path.exists(os.path.join(a.lora_model, "adapter_config.json")):
+                  log.warning("No adapter config – copying base model only")
+                  copy_dir(a.base_model, a.output_dir)
+                  return
+          
+              try:
+                  from transformers import AutoModelForCausalLM, AutoTokenizer
+                  from peft import PeftModel
+          
+                  base = AutoModelForCausalLM.from_pretrained(a.base_model, local_files_only=True)
+                  tok  = AutoTokenizer.from_pretrained(a.base_model, local_files_only=True)
+                  log.info("Merging LoRA adapter …")
+                  model = PeftModel.from_pretrained(base, a.lora_model).merge_and_unload()
+                  model.save_pretrained(a.output_dir)
+                  tok.save_pretrained(a.output_dir)
+                  log.info("Merged model written to %s", a.output_dir)
+              except Exception as e:
+                  log.error("Merge failed: %s – copying base model", e)
+                  copy_dir(a.base_model, a.output_dir)
+          
+          if __name__ == "__main__":
+              main()
+          PY
+              chmod +x scripts/merge_lora.py
       
-
+            # ───── merge / copy into merged-model ─────
+              mkdir -p merged-model
+              scripts/merge_lora.py \
+                --base-model base-model \
+                --lora-model fine-tuned-model \
+                --output-dir merged-model
+          
+              echo "Merged-model directory:"
+              ls -la merged-model
+              
       - name: Convert to GGUF Format
         run: |
           # Install llama-cpp-python for GGUF conversion
