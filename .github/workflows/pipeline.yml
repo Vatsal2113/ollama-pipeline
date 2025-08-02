@@ -1029,8 +1029,10 @@ jobs:
           aws s3 cp --recursive s3://${S3_BUCKET_NAME}/base-models/${{ github.event.inputs.base_model || 'tinyllama' }}/ ./base-model/
 
       - name: Download Fine-tuned LoRA Adapter
+        shell: bash 
         run: |
-          # Create directory for the fine-tuned model
+          set -euo pipefail
+	  # Create directory for the fine-tuned model
           mkdir -p ./fine-tuned-model
           
           # Use the safer download script
@@ -1040,7 +1042,7 @@ jobs:
           else
             echo "Using fallback adapter files"
             # Create minimal adapter files
-            cat > ./fine-tuned-model/adapter_config.json << 'EOF'
+            cat > ./fine-tuned-model/adapter_config.json <<'EOF'
             {
               "base_model_name_or_path": "fallback",
               "peft_type": "LORA",
@@ -1050,11 +1052,11 @@ jobs:
               "lora_alpha": 16,
               "lora_dropout": 0.05
             }
-          EOF 
-          fi         
-          # List files in fine-tuned-model dir
-          echo "Files in fine-tuned-model directory:"
-          ls -la ./fine-tuned-model/
+            EOF 
+              fi         
+          	# List files in fine-tuned-model dir
+              echo "Files in fine-tuned-model directory:"
+              ls -la ./fine-tuned-model/
 
       - name: Merge LoRA Weights
         run: |
